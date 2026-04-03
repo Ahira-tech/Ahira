@@ -10,7 +10,7 @@ from ai.database import get_connection, _placeholder, _fetchrow, _fetchall, USE_
 
 MONGODB_URL = os.environ.get(
     "MONGODB_URL",
-    "mongodb+srv://ghastejyoti_db_user:YOUR_MONGO_PASSWORD@cluster0.yl8d8av.mongodb.net/?appName=Cluster0"
+    "mongodb+srv://ahira_db_user:q21CDcVJZXZhIfGBqT7V6E8ibnM33dse@cluster0.yl8d8av.mongodb.net/?appName=Cluster0"
 )
 
 
