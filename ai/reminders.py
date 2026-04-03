@@ -17,17 +17,20 @@ MONGODB_URL = os.environ.get(
 def _get_mongo_collection(collection_name: str):
     """Returns a MongoDB collection or None if unavailable."""
     try:
+        import ssl
         from pymongo import MongoClient
-        from pymongo.errors import ConnectionFailure
-        client = MongoClient(MONGODB_URL, serverSelectionTimeoutMS=5000)
-        # Ping to confirm connection
+        client = MongoClient(
+            MONGODB_URL,
+            serverSelectionTimeoutMS=5000,
+            tls=True,
+            tlsAllowInvalidCertificates=True
+        )
         client.admin.command("ping")
         db = client["ahira_db"]
         return db[collection_name]
     except Exception as e:
         print(f"[MongoDB] Could not connect: {e}")
         return None
-
 
 # ─────────────────────────────────────────────────────────────
 # REMINDERS — stored in PostgreSQL / SQLite
@@ -127,7 +130,12 @@ def get_mongo_status() -> dict:
     """Check MongoDB connectivity — used by test page."""
     try:
         from pymongo import MongoClient
-        client = MongoClient(MONGODB_URL, serverSelectionTimeoutMS=5000)
+        client = MongoClient(
+            MONGODB_URL,
+            serverSelectionTimeoutMS=5000,
+            tls=True,
+            tlsAllowInvalidCertificates=True
+        )
         client.admin.command("ping")
         db = client["ahira_db"]
         collections = db.list_collection_names()
