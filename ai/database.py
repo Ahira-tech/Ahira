@@ -1,54 +1,86 @@
-"""
-database.py — Auto-detects environment.
-Local = SQLite, Render = PostgreSQL (DATABASE_URL env var or hardcoded fallback)
-"""
-
 import os
+import sqlite3
 import hashlib
 import secrets
 
-# Render internal URL — used when deployed on Render
-RENDER_DB_URL = "postgresql://ahira_db_user:q21CDcVJZXZhIfGBqT7V6E8ibnM33dse@dpg-d77ok1ua2pns73au3t3g-a/ahira_db"
+# ─────────────────────────────────────────────────────────────
+# CONFIG — reads from environment variables first, then falls back
+# to hardcoded values (set these in Render dashboard)
+# ─────────────────────────────────────────────────────────────
 
-DATABASE_URL = os.environ.get("DATABASE_URL", RENDER_DB_URL)
+POSTGRES_URL = os.environ.get(
+    "POSTGRES_URL",
+    "postgresql://ahira_db_user:q21CDcVJZXZhIfGBqT7V6E8ibnM33dse@dpg-d77ok1ua2pns73au3t3g-a/ahira_db"
+)
 
-# If running locally without any pg server, fall back to SQLite
-try:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    # Quick connectivity test
-    _test = psycopg2.connect(DATABASE_URL, connect_timeout=5, cursor_factory=RealDictCursor)
-    _test.close()
-    USE_POSTGRES = True
-    print("[DB] Connected to PostgreSQL ✓")
-except Exception as _e:
-    USE_POSTGRES = False
-    print(f"[DB] PostgreSQL unavailable ({_e}), falling back to SQLite")
+SQLITE_PATH = "data/ahira.db"
 
-if not USE_POSTGRES:
-    import sqlite3
+# ─────────────────────────────────────────────────────────────
+# BACKEND DETECTION — try PostgreSQL, fall back to SQLite
+# ─────────────────────────────────────────────────────────────
 
-    DB_PATH = "data/ahira.db"
+def _try_import_psycopg2():
+    try:
+        import psycopg2
+        import psycopg2.extras
+        return psycopg2
+    except ImportError:
+        return None
 
-    def get_connection():
+_psycopg2 = _try_import_psycopg2()
+USE_POSTGRES = bool(_psycopg2 and POSTGRES_URL)
+
+
+def get_connection():
+    """Returns a DB connection — PostgreSQL if available, else SQLite."""
+    if USE_POSTGRES:
+        conn = _psycopg2.connect(POSTGRES_URL)
+        return conn
+    else:
         os.makedirs("data", exist_ok=True)
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(SQLITE_PATH)
         conn.row_factory = sqlite3.Row
         return conn
 
-else:
-    def get_connection():
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-        return conn
+
+def _placeholder(use_postgres: bool) -> str:
+    """SQL placeholder for parameters."""
+    return "%s" if use_postgres else "?"
 
 
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+def _fetchrow(cursor):
+    """Fetch one row as dict regardless of backend."""
+    if USE_POSTGRES:
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        cols = [desc[0] for desc in cursor.description]
+        return dict(zip(cols, row))
+    else:
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
+
+def _fetchall(cursor):
+    """Fetch all rows as list of dicts regardless of backend."""
+    if USE_POSTGRES:
+        rows = cursor.fetchall()
+        if not rows:
+            return []
+        cols = [desc[0] for desc in cursor.description]
+        return [dict(zip(cols, r)) for r in rows]
+    else:
+        return [dict(r) for r in cursor.fetchall()]
+
+
+# ─────────────────────────────────────────────────────────────
+# INIT DB
+# ─────────────────────────────────────────────────────────────
 
 def init_db():
     conn = get_connection()
     c = conn.cursor()
+    p = _placeholder(USE_POSTGRES)
 
     if USE_POSTGRES:
         c.execute("""
@@ -63,11 +95,25 @@ def init_db():
         c.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
                 token      TEXT PRIMARY KEY,
-                user_id    INTEGER NOT NULL REFERENCES users(id),
+                user_id    INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS reminders (
+                id         SERIAL PRIMARY KEY,
+                user_id    INTEGER DEFAULT 1,
+                task       TEXT NOT NULL,
+                date       TEXT,
+                time       TEXT,
+                priority   TEXT DEFAULT 'normal',
+                completed  INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
     else:
+        # SQLite fallback
         c.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,12 +127,32 @@ def init_db():
             CREATE TABLE IF NOT EXISTS sessions (
                 token      TEXT PRIMARY KEY,
                 user_id    INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS reminders (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER DEFAULT 1,
+                task       TEXT NOT NULL,
+                date       TEXT,
+                time       TEXT,
+                priority   TEXT DEFAULT 'normal',
+                completed  INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        for sql in [
-            "ALTER TABLE users ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-        ]:
+        # Safe migrations for old SQLite databases
+        migrations = [
+            "ALTER TABLE reminders ADD COLUMN user_id INTEGER DEFAULT 1",
+            "ALTER TABLE reminders ADD COLUMN date TEXT",
+            "ALTER TABLE reminders ADD COLUMN time TEXT",
+            "ALTER TABLE reminders ADD COLUMN priority TEXT DEFAULT 'normal'",
+            "ALTER TABLE reminders ADD COLUMN completed INTEGER DEFAULT 0",
+            "ALTER TABLE reminders ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        ]
+        for sql in migrations:
             try:
                 c.execute(sql)
             except Exception:
@@ -94,40 +160,42 @@ def init_db():
 
     conn.commit()
     conn.close()
-    print("[DB] Tables ready ✓")
+    print(f"[DB] Initialized using {'PostgreSQL' if USE_POSTGRES else 'SQLite'}")
 
 
-def _p():
-    """Return correct placeholder for current DB."""
-    return "%s" if USE_POSTGRES else "?"
+# ─────────────────────────────────────────────────────────────
+# USER AUTH
+# ─────────────────────────────────────────────────────────────
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
 
 
 def create_user(name: str, email: str, password: str):
     conn = get_connection()
     c = conn.cursor()
-    p = _p()
+    p = _placeholder(USE_POSTGRES)
     try:
         if USE_POSTGRES:
             c.execute(
-                f"INSERT INTO users (name, email, password) VALUES ({p},{p},{p}) RETURNING id",
+                f"INSERT INTO users (name, email, password) VALUES ({p}, {p}, {p}) RETURNING id",
                 (name.strip(), email.strip().lower(), hash_password(password))
             )
             row = c.fetchone()
-            user_id = row["id"]
+            user_id = row[0]
         else:
             c.execute(
-                f"INSERT INTO users (name, email, password) VALUES ({p},{p},{p})",
+                f"INSERT INTO users (name, email, password) VALUES ({p}, {p}, {p})",
                 (name.strip(), email.strip().lower(), hash_password(password))
             )
             user_id = c.lastrowid
         conn.commit()
-        return {"id": user_id, "name": name.strip(), "email": email.strip().lower()}
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        return None
+        return {"id": user_id, "name": name, "email": email}
+    except Exception as e:
+        err = str(e).lower()
+        if "unique" in err or "duplicate" in err:
+            return None  # email already exists
+        raise
     finally:
         conn.close()
 
@@ -135,22 +203,22 @@ def create_user(name: str, email: str, password: str):
 def authenticate_user(email: str, password: str):
     conn = get_connection()
     c = conn.cursor()
-    p = _p()
+    p = _placeholder(USE_POSTGRES)
     c.execute(
         f"SELECT id, name, email FROM users WHERE email={p} AND password={p}",
         (email.strip().lower(), hash_password(password))
     )
-    row = c.fetchone()
+    row = _fetchrow(c)
     conn.close()
-    return dict(row) if row else None
+    return row
 
 
 def create_session(user_id: int) -> str:
     token = secrets.token_hex(32)
     conn = get_connection()
     c = conn.cursor()
-    p = _p()
-    c.execute(f"INSERT INTO sessions (token, user_id) VALUES ({p},{p})", (token, user_id))
+    p = _placeholder(USE_POSTGRES)
+    c.execute(f"INSERT INTO sessions (token, user_id) VALUES ({p}, {p})", (token, user_id))
     conn.commit()
     conn.close()
     return token
@@ -161,21 +229,34 @@ def get_user_from_token(token: str):
         return None
     conn = get_connection()
     c = conn.cursor()
-    p = _p()
+    p = _placeholder(USE_POSTGRES)
     c.execute(f"""
         SELECT u.id, u.name, u.email
         FROM sessions s JOIN users u ON s.user_id = u.id
         WHERE s.token = {p}
     """, (token,))
-    row = c.fetchone()
+    row = _fetchrow(c)
     conn.close()
-    return dict(row) if row else None
+    return row
 
 
 def delete_session(token: str):
     conn = get_connection()
     c = conn.cursor()
-    p = _p()
+    p = _placeholder(USE_POSTGRES)
     c.execute(f"DELETE FROM sessions WHERE token={p}", (token,))
     conn.commit()
     conn.close()
+
+
+# ─────────────────────────────────────────────────────────────
+# STATUS CHECK (used by test page)
+# ─────────────────────────────────────────────────────────────
+
+def get_db_status() -> dict:
+    """Returns info about which database backend is active."""
+    return {
+        "backend": "postgresql" if USE_POSTGRES else "sqlite",
+        "postgres_url_set": bool(POSTGRES_URL),
+        "psycopg2_available": bool(_psycopg2),
+    }
