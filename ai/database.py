@@ -1,16 +1,45 @@
-import sqlite3
+"""
+database.py — Auto-detects environment.
+Local = SQLite, Render = PostgreSQL (DATABASE_URL env var or hardcoded fallback)
+"""
+
 import os
 import hashlib
 import secrets
 
-DB_PATH = "data/ahira.db"
+# Render internal URL — used when deployed on Render
+RENDER_DB_URL = "postgresql://ahira_db_user:q21CDcVJZXZhIfGBqT7V6E8ibnM33dse@dpg-d77ok1ua2pns73au3t3g-a/ahira_db"
 
+DATABASE_URL = os.environ.get("DATABASE_URL", RENDER_DB_URL)
 
-def get_connection():
-    os.makedirs("data", exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+# If running locally without any pg server, fall back to SQLite
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    # Quick connectivity test
+    _test = psycopg2.connect(DATABASE_URL, connect_timeout=5, cursor_factory=RealDictCursor)
+    _test.close()
+    USE_POSTGRES = True
+    print("[DB] Connected to PostgreSQL ✓")
+except Exception as _e:
+    USE_POSTGRES = False
+    print(f"[DB] PostgreSQL unavailable ({_e}), falling back to SQLite")
+
+if not USE_POSTGRES:
+    import sqlite3
+
+    DB_PATH = "data/ahira.db"
+
+    def get_connection():
+        os.makedirs("data", exist_ok=True)
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+else:
+    def get_connection():
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        return conn
 
 
 def hash_password(password: str) -> str:
@@ -21,75 +50,84 @@ def init_db():
     conn = get_connection()
     c = conn.cursor()
 
-    # Users table
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            name       TEXT NOT NULL,
-            email      TEXT UNIQUE NOT NULL,
-            password   TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    # Sessions table
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS sessions (
-            token      TEXT PRIMARY KEY,
-            user_id    INTEGER NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        )
-    """)
-
-    # Reminders table — with user_id
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS reminders (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id    INTEGER DEFAULT 1,
-            task       TEXT NOT NULL,
-            date       TEXT,
-            time       TEXT,
-            priority   TEXT DEFAULT 'normal',
-            completed  INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    # Safe migrations for old databases
-    migrations = [
-        "ALTER TABLE reminders ADD COLUMN user_id INTEGER DEFAULT 1",
-        "ALTER TABLE reminders ADD COLUMN date TEXT",
-        "ALTER TABLE reminders ADD COLUMN time TEXT",
-        "ALTER TABLE reminders ADD COLUMN priority TEXT DEFAULT 'normal'",
-        "ALTER TABLE reminders ADD COLUMN completed INTEGER DEFAULT 0",
-        "ALTER TABLE reminders ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-    ]
-    for sql in migrations:
-        try:
-            c.execute(sql)
-        except Exception:
-            pass
+    if USE_POSTGRES:
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id         SERIAL PRIMARY KEY,
+                name       TEXT NOT NULL,
+                email      TEXT UNIQUE NOT NULL,
+                password   TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                token      TEXT PRIMARY KEY,
+                user_id    INTEGER NOT NULL REFERENCES users(id),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    else:
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL,
+                email      TEXT UNIQUE NOT NULL,
+                password   TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                token      TEXT PRIMARY KEY,
+                user_id    INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        for sql in [
+            "ALTER TABLE users ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        ]:
+            try:
+                c.execute(sql)
+            except Exception:
+                pass
 
     conn.commit()
     conn.close()
+    print("[DB] Tables ready ✓")
 
 
-# ── User auth ────────────────────────────────────────────────
+def _p():
+    """Return correct placeholder for current DB."""
+    return "%s" if USE_POSTGRES else "?"
+
 
 def create_user(name: str, email: str, password: str):
     conn = get_connection()
     c = conn.cursor()
+    p = _p()
     try:
-        c.execute(
-            "INSERT INTO users (name, email, password) VALUES (?, ?, ?)",
-            (name.strip(), email.strip().lower(), hash_password(password))
-        )
+        if USE_POSTGRES:
+            c.execute(
+                f"INSERT INTO users (name, email, password) VALUES ({p},{p},{p}) RETURNING id",
+                (name.strip(), email.strip().lower(), hash_password(password))
+            )
+            row = c.fetchone()
+            user_id = row["id"]
+        else:
+            c.execute(
+                f"INSERT INTO users (name, email, password) VALUES ({p},{p},{p})",
+                (name.strip(), email.strip().lower(), hash_password(password))
+            )
+            user_id = c.lastrowid
         conn.commit()
-        user_id = c.lastrowid
-        return {"id": user_id, "name": name, "email": email}
-    except sqlite3.IntegrityError:
-        return None  # email already exists
+        return {"id": user_id, "name": name.strip(), "email": email.strip().lower()}
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None
     finally:
         conn.close()
 
@@ -97,8 +135,9 @@ def create_user(name: str, email: str, password: str):
 def authenticate_user(email: str, password: str):
     conn = get_connection()
     c = conn.cursor()
+    p = _p()
     c.execute(
-        "SELECT id, name, email FROM users WHERE email=? AND password=?",
+        f"SELECT id, name, email FROM users WHERE email={p} AND password={p}",
         (email.strip().lower(), hash_password(password))
     )
     row = c.fetchone()
@@ -110,7 +149,8 @@ def create_session(user_id: int) -> str:
     token = secrets.token_hex(32)
     conn = get_connection()
     c = conn.cursor()
-    c.execute("INSERT INTO sessions (token, user_id) VALUES (?, ?)", (token, user_id))
+    p = _p()
+    c.execute(f"INSERT INTO sessions (token, user_id) VALUES ({p},{p})", (token, user_id))
     conn.commit()
     conn.close()
     return token
@@ -121,10 +161,11 @@ def get_user_from_token(token: str):
         return None
     conn = get_connection()
     c = conn.cursor()
-    c.execute("""
+    p = _p()
+    c.execute(f"""
         SELECT u.id, u.name, u.email
         FROM sessions s JOIN users u ON s.user_id = u.id
-        WHERE s.token = ?
+        WHERE s.token = {p}
     """, (token,))
     row = c.fetchone()
     conn.close()
@@ -134,6 +175,7 @@ def get_user_from_token(token: str):
 def delete_session(token: str):
     conn = get_connection()
     c = conn.cursor()
-    c.execute("DELETE FROM sessions WHERE token=?", (token,))
+    p = _p()
+    c.execute(f"DELETE FROM sessions WHERE token={p}", (token,))
     conn.commit()
     conn.close()
