@@ -1,61 +1,46 @@
 from ai.database import get_connection
 
 
-# -------------------------
-# CREATE
-# -------------------------
-
-def add_reminder(task, date=None, time=None, priority="normal"):
+def add_reminder(task, date=None, time=None, priority="normal", user_id=1):
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO reminders (task, date, time, priority, completed)
-        VALUES (?, ?, ?, ?, 0)
-    """, (task, date, time, priority))
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO reminders (user_id, task, date, time, priority, completed)
+        VALUES (?, ?, ?, ?, ?, 0)
+    """, (user_id, task, date, time, priority))
     conn.commit()
     conn.close()
 
 
-# -------------------------
-# READ
-# -------------------------
-
-def get_reminders():
+def get_reminders(user_id=1):
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
+    c = conn.cursor()
+    c.execute("""
         SELECT id, task, date, time, priority, completed
         FROM reminders
+        WHERE user_id = ?
         ORDER BY completed ASC, id DESC
-    """)
-    rows = cursor.fetchall()
+    """, (user_id,))
+    rows = c.fetchall()
     conn.close()
     return [dict(row) for row in rows]
 
 
-# -------------------------
-# DELETE
-# -------------------------
-
-def delete_reminder(reminder_id):
+def delete_reminder(reminder_id, user_id=1):
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+    c = conn.cursor()
+    c.execute("DELETE FROM reminders WHERE id=? AND user_id=?", (reminder_id, user_id))
     conn.commit()
     conn.close()
 
 
-# -------------------------
-# TOGGLE COMPLETE
-# -------------------------
-
-def toggle_reminder(reminder_id):
+def toggle_reminder(reminder_id, user_id=1):
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
+    c = conn.cursor()
+    c.execute("""
         UPDATE reminders
-        SET completed = CASE WHEN completed = 1 THEN 0 ELSE 1 END
-        WHERE id = ?
-    """, (reminder_id,))
+        SET completed = CASE WHEN completed=1 THEN 0 ELSE 1 END
+        WHERE id=? AND user_id=?
+    """, (reminder_id, user_id))
     conn.commit()
     conn.close()

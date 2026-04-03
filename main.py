@@ -1,32 +1,40 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Cookie, Response
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional
 
-from ai.brain import get_response
-from ai.database import init_db
+from ai.database import (
+    init_db, create_user, authenticate_user,
+    create_session, get_user_from_token, delete_session
+)
 from ai.reminders import get_reminders, add_reminder, delete_reminder, toggle_reminder
 
 app = FastAPI()
-
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-
-# ─────────────────────────────────────────────────────────────
-# REQUEST MODELS
-# ─────────────────────────────────────────────────────────────
-
-class HistoryMessage(BaseModel):
-    role: str       # "user" or "assistant"
-    content: str
+SESSION_COOKIE = "ahira_session"
 
 
-class ChatRequest(BaseModel):
-    message: str
-    history: List[HistoryMessage] = []
+# ── Helper ───────────────────────────────────────────────────
 
+def current_user(request: Request):
+    token = request.cookies.get(SESSION_COOKIE)
+    return get_user_from_token(token)
+
+
+# ── Models ───────────────────────────────────────────────────
+
+class RegisterBody(BaseModel):
+    name: str
+    email: str
+    password: str
+
+class LoginBody(BaseModel):
+    email: str
+    password: str
 
 class Reminder(BaseModel):
     task: str
@@ -35,78 +43,103 @@ class Reminder(BaseModel):
     priority: str = "normal"
 
 
-# ─────────────────────────────────────────────────────────────
-# STARTUP
-# ─────────────────────────────────────────────────────────────
+# ── Startup ──────────────────────────────────────────────────
 
 @app.on_event("startup")
 def startup():
     init_db()
 
 
-# ─────────────────────────────────────────────────────────────
-# PAGES
-# ─────────────────────────────────────────────────────────────
+# ── Pages ────────────────────────────────────────────────────
 
 @app.get("/")
 def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
-# ─────────────────────────────────────────────────────────────
-# CHAT  — accepts full history so Claude has context
-# ─────────────────────────────────────────────────────────────
+# ── Auth endpoints ───────────────────────────────────────────
 
-@app.post("/chat")
-def chat(req: ChatRequest):
-    try:
-        # Convert pydantic models to plain dicts for brain.py
-        history = [{"role": m.role, "content": m.content} for m in req.history]
-        result  = get_response(req.message, history)
-        return {
-            "reply":    result["reply"],
-            "reminder": result.get("reminder")
-        }
-    except Exception as e:
-        print(f"[Chat Error] {e}")
-        return {
-            "reply": "I'm having a moment! Give me a second and try again 💜",
-            "reminder": None
-        }
+@app.post("/register")
+def register(body: RegisterBody, response: Response):
+    if not body.name.strip() or not body.email.strip() or not body.password:
+        return JSONResponse({"status": "error", "message": "All fields are required."}, status_code=400)
+    if len(body.password) < 6:
+        return JSONResponse({"status": "error", "message": "Password must be at least 6 characters."}, status_code=400)
+
+    user = create_user(body.name, body.email, body.password)
+    if not user:
+        return JSONResponse({"status": "error", "message": "Email already registered."}, status_code=409)
+
+    token = create_session(user["id"])
+    resp  = JSONResponse({"status": "ok", "user": {"name": user["name"], "email": user["email"]}})
+    resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=30*24*3600)
+    return resp
 
 
-# ─────────────────────────────────────────────────────────────
-# REMINDERS
-# ─────────────────────────────────────────────────────────────
+@app.post("/login")
+def login(body: LoginBody, response: Response):
+    user = authenticate_user(body.email, body.password)
+    if not user:
+        return JSONResponse({"status": "error", "message": "Incorrect email or password."}, status_code=401)
+
+    token = create_session(user["id"])
+    resp  = JSONResponse({"status": "ok", "user": {"name": user["name"], "email": user["email"]}})
+    resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=30*24*3600)
+    return resp
+
+
+@app.post("/logout")
+def logout(request: Request, response: Response):
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        delete_session(token)
+    resp = JSONResponse({"status": "ok"})
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
+
+
+@app.get("/me")
+def me(request: Request):
+    user = current_user(request)
+    if not user:
+        return JSONResponse({"status": "guest"})
+    return JSONResponse({"status": "ok", "user": {"name": user["name"], "email": user["email"]}})
+
+
+# ── Reminders (user-scoped) ───────────────────────────────────
 
 @app.get("/reminders")
-def list_reminders():
-    return {"tasks": get_reminders()}
+def list_reminders(request: Request):
+    user = current_user(request)
+    uid  = user["id"] if user else 1
+    return {"tasks": get_reminders(uid)}
 
 
 @app.post("/add_reminder")
-def create_reminder(reminder: Reminder):
+def create_reminder(reminder: Reminder, request: Request):
     if not reminder.task or not reminder.task.strip():
         return {"status": "error", "message": "Task cannot be empty"}
-    add_reminder(reminder.task, reminder.date, reminder.time, reminder.priority)
+    user = current_user(request)
+    uid  = user["id"] if user else 1
+    add_reminder(reminder.task, reminder.date, reminder.time, reminder.priority, uid)
     return {"status": "success"}
 
 
 @app.delete("/reminder/{reminder_id}")
-def delete_task(reminder_id: int):
-    delete_reminder(reminder_id)
+def delete_task(reminder_id: int, request: Request):
+    user = current_user(request)
+    uid  = user["id"] if user else 1
+    delete_reminder(reminder_id, uid)
     return {"status": "deleted"}
 
 
 @app.post("/reminder/{reminder_id}/toggle")
-def toggle_task(reminder_id: int):
-    toggle_reminder(reminder_id)
+def toggle_task(reminder_id: int, request: Request):
+    user = current_user(request)
+    uid  = user["id"] if user else 1
+    toggle_reminder(reminder_id, uid)
     return {"status": "updated"}
 
-
-# ─────────────────────────────────────────────────────────────
-# HEALTH CHECK
-# ─────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():

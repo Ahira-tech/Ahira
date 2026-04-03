@@ -9,701 +9,549 @@
 <body>
 <div class="phone">
 
-    <!-- ═══ LOGO ═══════════════════════════════════════════ -->
-    <div class="logoContainer">
+    <!-- ══════════════════════════════════════════════════════
+         AUTH LOGO — only visible on auth screens
+    ═══════════════════════════════════════════════════════ -->
+    <div class="logoContainer" id="authLogo">
         <img src="/static/images/logo.png" class="appLogo" alt="Ahira">
         <h1 class="brandName">AHIRA</h1>
         <p class="tagline">Always by your side.</p>
     </div>
 
-    <div class="phoneContent">
+    <!-- ══════════════════════════════════════════════════════
+         AUTH WRAPPER
+    ═══════════════════════════════════════════════════════ -->
+    <div id="authWrapper" style="display:none;">
 
-    <!-- ═══════════════════════════════════════════════════════
-         HOME SCREEN
-    ════════════════════════════════════════════════════════ -->
-    <div id="homeScreen" class="screen">
-
-        <div class="summary-card">
-            <h3>Daily Summary</h3>
-            <div class="dateTimeRow">
-                <span id="dateTime">Loading...</span>
-            </div>
-            <div class="summary-status">
-                <div class="statusBox" id="overdue">
-                    <div class="statusDot">🔴</div>
-                    <div class="statusNum" id="overdueNum">0</div>
-                    <div class="statusLabel">Overdue</div>
-                </div>
-                <div class="statusBox" id="today">
-                    <div class="statusDot">🟡</div>
-                    <div class="statusNum" id="todayNum">0</div>
-                    <div class="statusLabel">Today</div>
-                </div>
-                <div class="statusBox" id="upcoming">
-                    <div class="statusDot">⚪</div>
-                    <div class="statusNum" id="upcomingNum">0</div>
-                    <div class="statusLabel">Upcoming</div>
-                </div>
-            </div>
-        </div>
-
-        <div class="periodHomeCard" onclick="nav('periodScreen')">
-            <div class="periodCalIcon">
-                <span id="periodDaysBig">--</span>
-                <span>days</span>
-            </div>
-            <div style="flex:1;">
-                <div style="font-weight:700;font-size:14px;color:var(--text-dark);">Period in <span id="periodDays">--</span> days</div>
-                <div class="periodDots" id="homePeriodDots"></div>
-            </div>
-            <span style="color:var(--text-light);font-size:13px;">Track ›</span>
-        </div>
-
-        <div class="waterHomeCard">
-            <div class="cardHeader">
-                <span style="font-weight:700;font-size:15px;color:var(--text-dark);">Water Intake 💧</span>
-                <span style="font-size:12px;color:var(--purple);cursor:pointer;" onclick="nav('waterScreen')">Details ›</span>
-            </div>
-            <div class="waterDropRow" id="homeWaterDrops"></div>
-            <div class="waterAddRow">
-                <button class="waterAddBtn" onclick="addWater()">+</button>
-                <span class="waterAddLabel"><span id="homeWaterCount">0</span> / <span id="homeWaterTarget">8</span> glasses</span>
-            </div>
-        </div>
-
-        <!-- Medicine home card -->
-        <div onclick="nav('medicineScreen',null)" style="
-            background: linear-gradient(135deg,#ede9fe,#ddd6fe 55%,#c7d2fe);
-            border: 1.5px solid rgba(196,181,253,0.55);
-            border-radius: 22px; padding: 16px; margin-top: 12px;
-            cursor: pointer; box-shadow: 0 8px 28px rgba(138,108,255,0.13);
-            display: flex; align-items: center; gap: 14px;
-            transition: transform 0.2s; position: relative; overflow: hidden;">
-            <!-- blob decoration -->
-            <div style="position:absolute;width:80px;height:80px;border-radius:50%;
-                background:#8a6cff;opacity:0.12;top:-20px;right:-16px;pointer-events:none;"></div>
-            <div style="position:absolute;width:50px;height:50px;border-radius:50%;
-                background:#c4b5fd;opacity:0.18;bottom:-14px;left:24px;pointer-events:none;"></div>
-            <!-- icon -->
-            <div style="width:52px;height:52px;border-radius:16px;flex-shrink:0;
-                background:linear-gradient(135deg,#8a6cff,#a78bfa);
-                display:flex;align-items:center;justify-content:center;font-size:24px;
-                box-shadow:0 6px 16px rgba(138,108,255,0.35);position:relative;z-index:1;">💊</div>
-            <!-- content -->
-            <div style="flex:1;min-width:0;position:relative;z-index:1;">
-                <div style="font-weight:700;font-size:15px;color:#4c1d95;">Medications</div>
-                <div id="homeMedSub" style="font-size:12px;color:#6b21a8;margin-top:2px;font-weight:500;">No medicines tracked</div>
-                <div style="width:100%;height:6px;background:rgba(139,92,246,0.18);border-radius:10px;margin-top:10px;overflow:hidden;">
-                    <div id="homeMedBarFill" style="height:100%;width:0%;border-radius:10px;background:linear-gradient(90deg,#8a6cff,#a78bfa);transition:width 0.55s ease;"></div>
-                </div>
-                <div id="homeMedMeta" style="font-size:11px;color:#7c3aed;margin-top:5px;opacity:0.75;"></div>
-            </div>
-            <span style="font-size:20px;color:#7c3aed;opacity:0.5;position:relative;z-index:1;">›</span>
-        </div>
-
-        <!-- Grocery home card -->
-        <div onclick="nav('groceryScreen',null)" style="
-            background: linear-gradient(135deg,#dcfce7,#bbf7d0 55%,#99f6e4);
-            border: 1.5px solid rgba(134,239,172,0.55);
-            border-radius: 22px; padding: 16px; margin-top: 12px;
-            cursor: pointer; box-shadow: 0 8px 28px rgba(34,197,94,0.12);
-            display: flex; align-items: center; gap: 14px;
-            transition: transform 0.2s; position: relative; overflow: hidden;">
-            <div style="position:absolute;width:80px;height:80px;border-radius:50%;
-                background:#22c55e;opacity:0.12;top:-20px;right:-16px;pointer-events:none;"></div>
-            <div style="position:absolute;width:50px;height:50px;border-radius:50%;
-                background:#4ade80;opacity:0.18;bottom:-14px;left:24px;pointer-events:none;"></div>
-            <div style="width:52px;height:52px;border-radius:16px;flex-shrink:0;
-                background:linear-gradient(135deg,#16a34a,#4ade80);
-                display:flex;align-items:center;justify-content:center;font-size:24px;
-                box-shadow:0 6px 16px rgba(34,197,94,0.35);position:relative;z-index:1;">🛒</div>
-            <div style="flex:1;min-width:0;position:relative;z-index:1;">
-                <div style="font-weight:700;font-size:15px;color:#14532d;">Grocery</div>
-                <div id="homeGrocerySub" style="font-size:12px;color:#166534;margin-top:2px;font-weight:500;">No items tracked</div>
-                <div style="width:100%;height:6px;background:rgba(34,197,94,0.18);border-radius:10px;margin-top:10px;overflow:hidden;">
-                    <div id="homeGroceryBarFill" style="height:100%;width:0%;border-radius:10px;background:linear-gradient(90deg,#22c55e,#4ade80);transition:width 0.55s ease;"></div>
-                </div>
-                <div id="homeGroceryMeta" style="font-size:11px;color:#16a34a;margin-top:5px;opacity:0.75;"></div>
-            </div>
-            <span style="font-size:20px;color:#16a34a;opacity:0.5;position:relative;z-index:1;">›</span>
-        </div>
-
-        <!-- Mood checker -->
-        <div style="
-            background: linear-gradient(145deg,rgba(237,224,255,0.72),rgba(252,228,240,0.65));
-            border: 1.5px solid rgba(196,181,253,0.45);
-            border-radius: 22px; padding: 18px; margin-top: 12px;
-            box-shadow: 0 8px 28px rgba(138,108,255,0.11);
-            position: relative; overflow: hidden;">
-            <!-- top-right glow blob -->
-            <div style="position:absolute;width:100px;height:100px;border-radius:50%;
-                background:linear-gradient(135deg,#c4b5fd,#f0abcb);opacity:0.25;
-                top:-30px;right:-30px;pointer-events:none;"></div>
-
-            <div style="font-size:15px;font-weight:700;color:#3d2e6b;margin-bottom:2px;">How are you feeling? 💜</div>
-            <div style="font-size:12px;color:#a89cc8;margin-bottom:14px;">Tap your mood — Ahira will respond</div>
-
-            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">
-                <button class="moodBtn" onclick="selectMood(this,'happy','😊')">
-                    <span class="moodEmoji">😊</span><span class="moodLabel">Happy</span>
-                </button>
-                <button class="moodBtn" onclick="selectMood(this,'calm','😌')">
-                    <span class="moodEmoji">😌</span><span class="moodLabel">Calm</span>
-                </button>
-                <button class="moodBtn" onclick="selectMood(this,'tired','😴')">
-                    <span class="moodEmoji">😴</span><span class="moodLabel">Tired</span>
-                </button>
-                <button class="moodBtn" onclick="selectMood(this,'sad','😢')">
-                    <span class="moodEmoji">😢</span><span class="moodLabel">Sad</span>
-                </button>
-                <button class="moodBtn" onclick="selectMood(this,'stressed','😤')">
-                    <span class="moodEmoji">😤</span><span class="moodLabel">Stressed</span>
-                </button>
-                <button class="moodBtn" onclick="selectMood(this,'anxious','😰')">
-                    <span class="moodEmoji">😰</span><span class="moodLabel">Anxious</span>
-                </button>
-                <button class="moodBtn" onclick="selectMood(this,'energetic','⚡')">
-                    <span class="moodEmoji">⚡</span><span class="moodLabel">Energetic</span>
-                </button>
-                <button class="moodBtn" onclick="selectMood(this,'grateful','🥰')">
-                    <span class="moodEmoji">🥰</span><span class="moodLabel">Grateful</span>
-                </button>
-            </div>
-            <div class="moodResponse" id="moodResponse"></div>
-        </div>
-
-        <!-- Smart alert banners -->
-        <div id="homeAlerts"></div>
-
-        <div class="thoughtCard">"Embrace the day with a smile. Good things are coming 💜"</div>
-
-    </div><!-- /homeScreen -->
-
-
-    <!-- ═══════════════════════════════════════════════════════
-         CHAT SCREEN
-    ════════════════════════════════════════════════════════ -->
-    <div id="chatScreen" class="screen" style="display:none;">
-
-        <div class="chatHeader">
-            <div class="chatAvatarWrap">
-                <div class="chatAvatar">A</div>
-                <div class="chatOnlineDot"></div>
-            </div>
-            <div>
-                <div class="chatHeaderName">Ahira</div>
-                <div class="chatHeaderStatus">Always here for you 💜</div>
-            </div>
-        </div>
-
-        <div class="chatBox" id="chat">
-            <div class="chatDateDivider">Today</div>
-            <div class="botMsgWrap">
-                <div class="botAvatar">A</div>
-                <div class="botMsg">Hi! I'm Ahira 💜<br>I'm here to help with your day, meals, reminders, and anything on your mind.</div>
-            </div>
-            <div class="chatSuggestions">
-                <button class="suggBtn" onclick="quickChat('What should I cook today?')">🍽 Meal ideas</button>
-                <button class="suggBtn" onclick="quickChat('Plan my day')">☀️ Plan my day</button>
-                <button class="suggBtn" onclick="quickChat('I feel stressed')">💆 I feel stressed</button>
-            </div>
-        </div>
-
-        <div class="chatInputWrap">
-            <div class="chatInputRow">
-                <input id="message" class="chatInputField" placeholder="Message Ahira...">
-                <button class="chatSendBtn" onclick="sendMessage()">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-                </button>
-            </div>
-        </div>
-
-    </div><!-- /chatScreen -->
-
-
-    <!-- ═══════════════════════════════════════════════════════
-         PLANNER SCREEN
-    ════════════════════════════════════════════════════════ -->
-    <div id="plannerScreen" class="screen" style="display:none;">
-
-        <div class="plannerHeader">
-            <div>
-                <div class="screenTitle">My Planner</div>
-                <div style="font-size:12px;color:var(--text-light);" id="plannerDateLabel"></div>
-            </div>
-            <button class="addPillBtn" onclick="openAddTask()">+ Add</button>
-        </div>
-
-        <!-- Mini calendar strip -->
-        <div class="calStrip" id="calStrip"></div>
-
-        <!-- Add Task Modal -->
-        <div id="addTaskModal" class="modalOverlay" style="display:none;" onclick="closeAddTask(event)">
-            <div class="modalCard" onclick="event.stopPropagation()">
-                <div class="modalTitle">New Task</div>
-
-                <div class="formGroup">
-                    <div class="formLabel">Task Name</div>
-                    <input id="taskInput" class="formInput" placeholder="What needs to be done?">
-                </div>
-
-                <div class="formRow">
-                    <div class="formGroup" style="flex:1;">
-                        <div class="formLabel">Date</div>
-                        <input id="dateInput" class="formInput" type="date">
-                    </div>
-                    <div class="formGroup" style="flex:1;">
-                        <div class="formLabel">Time</div>
-                        <input id="timeInput" class="formInput" type="time">
-                    </div>
-                </div>
-
-                <div class="formGroup">
-                    <div class="formLabel">Type</div>
-                    <div class="typeChips" id="taskTypeChips">
-                        <span class="typeChip active" data-val="task">📋 Task</span>
-                        <span class="typeChip" data-val="event">🎉 Event</span>
-                        <span class="typeChip" data-val="reminder">🔔 Reminder</span>
-                    </div>
-                </div>
-
-                <div class="formGroup">
-                    <div class="formLabel">Priority</div>
-                    <div class="typeChips" id="taskPriorityChips">
-                        <span class="typeChip active" data-val="normal">Normal</span>
-                        <span class="typeChip" data-val="high" style="color:#ff6b8a;">🔥 High</span>
-                        <span class="typeChip" data-val="low" style="color:var(--text-light);">Low</span>
-                    </div>
-                </div>
-
-                <div class="formGroup">
-                    <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-mid);cursor:pointer;">
-                        <input type="checkbox" id="pinTask" style="accent-color:var(--purple);width:16px;height:16px;">
-                        📌 Pin as Upcoming Event
-                    </label>
-                </div>
-
-                <div class="btnGroup" style="margin-top:14px;">
-                    <button class="actionBtn" onclick="saveTask()">Save Task</button>
-                    <button class="secondaryBtn" onclick="closeAddTask()">Cancel</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Pinned Events -->
-        <div id="pinnedSection" style="display:none;">
-            <div class="sectionLabel">📌 Pinned Events</div>
-            <div id="pinnedList"></div>
-        </div>
-
-        <!-- Today Tasks -->
-        <div class="sectionLabel">Today's Tasks</div>
-        <div id="todayTaskList"></div>
-
-        <!-- Upcoming -->
-        <div class="sectionLabel" style="margin-top:14px;">Upcoming</div>
-        <div id="upcomingTaskList"></div>
-
-        <!-- Completed -->
-        <div class="sectionLabel" style="margin-top:14px;cursor:pointer;" onclick="toggleCompleted()">
-            Done <span id="completedToggleArrow">›</span>
-        </div>
-        <div id="completedTaskList" style="display:none;"></div>
-
-    </div><!-- /plannerScreen -->
-
-
-    <!-- ═══════════════════════════════════════════════════════
-         WELLNESS DASHBOARD
-    ════════════════════════════════════════════════════════ -->
-    <div id="wellnessScreen" class="screen" style="display:none;">
-
-        <h2 class="sectionTitle">Wellness</h2>
-        <p style="font-size:13px;color:var(--text-light);margin-bottom:4px;">Your daily health overview</p>
-
-        <div class="wellnessCard" onclick="nav('periodScreen')">
-            <div class="wellnessIconBox" style="background:linear-gradient(135deg,rgba(255,182,193,0.5),rgba(255,154,118,0.4));">🌸</div>
-            <div class="wellnessCardInfo">
-                <div class="wellnessCardTitle">Period Tracker</div>
-                <div class="wellnessCardSub" id="wellPeriodSub">Set your last period date</div>
-            </div>
-            <div class="wellnessArrow">›</div>
-        </div>
-
-        <div class="wellnessCard" onclick="nav('medicineScreen')">
-            <div class="wellnessIconBox" style="background:linear-gradient(135deg,rgba(196,181,253,0.45),rgba(147,197,253,0.35));">💊</div>
-            <div class="wellnessCardInfo">
-                <div class="wellnessCardTitle">Medication Tracker</div>
-                <div class="wellnessCardSub" id="wellMedSub">No medicines tracked</div>
-            </div>
-            <div class="wellnessArrow">›</div>
-        </div>
-
-        <div class="wellnessCard" onclick="nav('waterScreen')">
-            <div class="wellnessIconBox" style="background:linear-gradient(135deg,rgba(147,210,253,0.5),rgba(100,180,255,0.35));">💧</div>
-            <div class="wellnessCardInfo">
-                <div class="wellnessCardTitle">Water Intake</div>
-                <div class="wellnessCardSub" id="wellWaterSub">0 / 8 glasses today</div>
-            </div>
-            <div class="wellnessArrow">›</div>
-        </div>
-
-        <div class="wellnessCard" onclick="nav('groceryScreen')">
-            <div class="wellnessIconBox" style="background:linear-gradient(135deg,rgba(167,243,208,0.5),rgba(110,231,183,0.35));">🛒</div>
-            <div class="wellnessCardInfo">
-                <div class="wellnessCardTitle">Grocery List</div>
-                <div class="wellnessCardSub" id="wellGrocerySub">Manage your grocery</div>
-            </div>
-            <div class="wellnessArrow">›</div>
-        </div>
-
-    </div><!-- /wellnessScreen -->
-
-
-    <!-- ═══════════════════════════════════════════════════════
-         PERIOD SCREEN
-    ════════════════════════════════════════════════════════ -->
-    <div id="periodScreen" class="screen" style="display:none;">
-
-        <div class="screenHeader">
-            <button class="backBtn" onclick="nav('wellnessScreen')">‹</button>
-            <span class="screenTitle">Period Tracker</span>
-        </div>
-
-        <div class="periodBigCard">
-            <div class="periodBigLabel" id="periodBigLabel">Next Period in -- Days</div>
-            <div class="progressBar" style="margin-top:14px;"><div id="periodFillDetail"></div></div>
-            <div class="periodDateLabel" id="periodDateLabel">Set your last period date</div>
-        </div>
-
-        <div class="cardSoft">
-            <div class="cardHeader">Cycle Info</div>
-            <div class="infoRow"><span>Cycle Length</span><b>28 days</b></div>
-            <div class="infoRow"><span>Next Period</span><b><span id="periodDaysDetail">--</span> days</b></div>
-            <div class="infoRow"><span>Ovulation</span><b>Day 14</b></div>
-        </div>
-
-        <div class="cardSoft">
-            <div class="cardHeader" style="margin-bottom:8px;">Cycle Insights</div>
-            <div class="insightItem"><span class="insightDot" style="background:#ffb3c6;"></span>Prepare for PMS symptoms &amp; cravings</div>
-            <div class="insightItem"><span class="insightDot" style="background:#93c5fd;"></span>Stay hydrated during this time</div>
-            <div class="insightItem"><span class="insightDot" style="background:#d1d5db;"></span>Use heating pad for cramps</div>
-        </div>
-
-        <div class="cardSoft">
-            <div class="cardHeader" style="margin-bottom:10px;">Cycle Timeline</div>
-            <div class="cycleTimeline">
-                <div class="cyclePhase" style="flex:1;background:#ffb3c6;"></div>
-                <div class="cyclePhase" style="flex:2;background:#cdb4db;"></div>
-                <div class="cyclePhase" style="flex:1;background:#a2d2ff;"></div>
-                <div class="cyclePhase" style="flex:2;background:#bde0fe;"></div>
-            </div>
-            <div class="cycleLabels"><span>Period</span><span>Follicular</span><span>Ovulation</span><span>Luteal</span></div>
-        </div>
-
-        <div class="btnGroup">
-            <button class="actionBtn" onclick="setPeriodDate()">Update Date</button>
-            <button class="secondaryBtn" onclick="nav('wellnessScreen')">← Back</button>
-        </div>
-
-    </div><!-- /periodScreen -->
-
-
-    <!-- ═══════════════════════════════════════════════════════
-         MEDICINE SCREEN
-    ════════════════════════════════════════════════════════ -->
-    <div id="medicineScreen" class="screen" style="display:none;">
-
-        <div class="screenHeader">
-            <button class="backBtn" onclick="nav('wellnessScreen')">‹</button>
-            <span class="screenTitle">Medications</span>
-            <button class="addPillBtn" style="margin-left:auto;" onclick="toggleMedicineForm()">+ Add</button>
-        </div>
-
-        <!-- Summary strip -->
-        <div class="medSummaryStrip">
-            <div class="medSummaryBox">
-                <div class="medSummaryNum" id="medTotalCount">0</div>
-                <div class="medSummaryLabel">Total</div>
-            </div>
-            <div class="medSummaryBox" style="border-color:rgba(255,107,138,0.3);">
-                <div class="medSummaryNum" style="color:#ff6b8a;" id="medLowCount">0</div>
-                <div class="medSummaryLabel">Low Stock</div>
-            </div>
-            <div class="medSummaryBox" style="border-color:rgba(100,200,100,0.3);">
-                <div class="medSummaryNum" style="color:#4caf50;" id="medTakenCount">0</div>
-                <div class="medSummaryLabel">Taken Today</div>
-            </div>
-        </div>
-
-        <!-- Filter tabs -->
-        <div class="filterTabs">
-            <button class="filterTab active" onclick="filterMeds('all',this)">All</button>
-            <button class="filterTab" onclick="filterMeds('morning',this)">☀️ Morning</button>
-            <button class="filterTab" onclick="filterMeds('afternoon',this)">🌤 Noon</button>
-            <button class="filterTab" onclick="filterMeds('evening',this)">🌙 Evening</button>
-        </div>
-
-        <!-- Medicine list -->
-        <div id="medicineList"></div>
-
-        <!-- Add form -->
-        <div id="medicineForm" class="medFormCard" style="display:none;">
-            <div class="modalTitle" style="margin-bottom:12px;">Add Medicine</div>
-
+        <!-- LOGIN -->
+        <div id="loginScreen" class="authCard">
+            <div class="authTitle">Welcome back 💜</div>
+            <div class="authSub">Sign in to your Ahira account</div>
             <div class="formGroup">
-                <div class="formLabel">Medicine Name</div>
-                <input id="medName" class="formInput" placeholder="e.g. Vitamin D3">
+                <div class="formLabel">Email</div>
+                <input id="loginEmail" class="formInput" type="email" placeholder="your@email.com" autocomplete="email">
             </div>
-
-            <div class="formRow">
-                <div class="formGroup" style="flex:1;">
-                    <div class="formLabel">Dose (mg)</div>
-                    <input id="medDose" class="formInput" type="number" placeholder="500">
-                </div>
-                <div class="formGroup" style="flex:1;">
-                    <div class="formLabel">Stock Count</div>
-                    <input id="medStock" class="formInput" type="number" placeholder="30">
-                </div>
-            </div>
-
-            <div class="formRow">
-                <div class="formGroup" style="flex:1;">
-                    <div class="formLabel">Time</div>
-                    <input id="medTime" class="formInput" type="time">
-                </div>
-                <div class="formGroup" style="flex:1;">
-                    <div class="formLabel">Frequency</div>
-                    <select id="medFrequency" class="formInput">
-                        <option value="morning">Morning</option>
-                        <option value="afternoon">Afternoon</option>
-                        <option value="evening">Evening</option>
-                        <option value="weekly">Weekly</option>
-                    </select>
-                </div>
-            </div>
-
             <div class="formGroup">
-                <div class="formLabel">Priority</div>
-                <div class="typeChips" id="medPriorityChips">
-                    <span class="typeChip active" data-val="normal">Normal</span>
-                    <span class="typeChip" data-val="high" style="color:#ff6b8a;">🔥 Critical</span>
-                </div>
+                <div class="formLabel">Password</div>
+                <input id="loginPassword" class="formInput" type="password" placeholder="••••••••" autocomplete="current-password"
+                    onkeydown="if(event.key==='Enter') submitLogin()">
             </div>
+            <div id="loginError" class="authError" style="display:none;"></div>
+            <button class="actionBtn" id="loginBtn" onclick="submitLogin()">Sign In</button>
+            <div class="authSwitch">New here? <span onclick="showAuthPanel('registerScreen')">Create an account →</span></div>
+        </div>
 
+        <!-- REGISTER -->
+        <div id="registerScreen" class="authCard" style="display:none;">
+            <div class="authTitle">Join Ahira 🌸</div>
+            <div class="authSub">Create your personal companion account</div>
             <div class="formGroup">
-                <div class="formLabel">Notes</div>
-                <input id="medNotes" class="formInput" placeholder="e.g. Take with food">
+                <div class="formLabel">Your Name</div>
+                <input id="regName" class="formInput" type="text" placeholder="e.g. Priya" autocomplete="name">
             </div>
-
-            <div class="btnGroup">
-                <button class="actionBtn" onclick="addMedicine()">Save</button>
-                <button class="secondaryBtn" onclick="toggleMedicineForm()">Cancel</button>
+            <div class="formGroup">
+                <div class="formLabel">Email</div>
+                <input id="regEmail" class="formInput" type="email" placeholder="your@email.com" autocomplete="email">
             </div>
-        </div>
-
-    </div><!-- /medicineScreen -->
-
-
-    <!-- ═══════════════════════════════════════════════════════
-         WATER SCREEN
-    ════════════════════════════════════════════════════════ -->
-    <div id="waterScreen" class="screen" style="display:none;">
-
-        <div class="screenHeader">
-            <button class="backBtn" onclick="nav('wellnessScreen')">‹</button>
-            <span class="screenTitle">Water Intake</span>
-            <button class="addPillBtn" style="margin-left:auto;" onclick="openWaterTarget()">Set Goal</button>
-        </div>
-
-        <!-- Big ring + count -->
-        <div class="waterRingCard">
-            <div class="waterRingOuter">
-                <svg class="waterRingSvg" viewBox="0 0 120 120">
-                    <circle class="ringTrack" cx="60" cy="60" r="50"/>
-                    <circle class="ringFill" id="waterRingCircle" cx="60" cy="60" r="50"
-                        stroke-dasharray="314" stroke-dashoffset="314"/>
-                </svg>
-                <div class="waterRingInner">
-                    <div class="waterRingCount" id="detailWaterCount">0</div>
-                    <div class="waterRingLabel">glasses</div>
-                </div>
+            <div class="formGroup">
+                <div class="formLabel">Password</div>
+                <input id="regPassword" class="formInput" type="password" placeholder="At least 6 characters" autocomplete="new-password">
             </div>
-            <div style="text-align:center;margin-top:8px;">
-                <span style="font-size:13px;color:var(--text-mid);">Target: <b id="waterTargetLabel">8</b> glasses · <span id="waterMlLabel">0 ml</span></span>
+            <div class="formGroup">
+                <div class="formLabel">Confirm Password</div>
+                <input id="regPasswordConfirm" class="formInput" type="password" placeholder="Re-enter password"
+                    onkeydown="if(event.key==='Enter') submitRegister()">
             </div>
+            <div id="registerError" class="authError" style="display:none;"></div>
+            <button class="actionBtn" id="registerBtn" onclick="submitRegister()">Create Account</button>
+            <div class="authSwitch">Already have an account? <span onclick="showAuthPanel('loginScreen')">Sign in →</span></div>
         </div>
 
-        <!-- Glass grid -->
-        <div class="waterGlassGrid" id="detailWaterGlasses"></div>
+    </div><!-- /authWrapper -->
 
-        <!-- Buttons -->
-        <div class="btnGroup">
-            <button class="actionBtn" onclick="addWater()">+ Add Glass</button>
-            <button class="secondaryBtn" onclick="removeWater()">– Remove</button>
-        </div>
-        <button class="secondaryBtn" style="margin-top:6px;" onclick="resetWater()">↺ Reset Today</button>
 
-        <!-- Time Log -->
-        <div class="sectionLabel" style="margin-top:16px;">⏱ Today's Log</div>
-        <div id="waterLog" class="waterLogList"></div>
+    <!-- ══════════════════════════════════════════════════════
+         APP WRAPPER — flex column: header → content → nav
+    ═══════════════════════════════════════════════════════ -->
+    <div id="appWrapper" style="display:none;">
 
-        <!-- Bar Chart -->
-        <div class="sectionLabel" style="margin-top:16px;">📊 Weekly Progress</div>
-        <div class="waterChartWrap">
-            <div class="waterBars" id="waterBarChart"></div>
-            <div class="waterBarLabels" id="waterBarLabels"></div>
-        </div>
-
-        <!-- Tips -->
-        <div class="cardSoft" style="margin-top:12px;">
-            <div class="cardHeader" style="margin-bottom:8px;">💡 Hydration Tips</div>
-            <div class="tipItem">🌅 Start your morning with a full glass of water</div>
-            <div class="tipItem">🍋 Add lemon slices for extra hydration</div>
-            <div class="tipItem">🔔 Set alarms every 2 hours as reminders</div>
-            <div class="tipItem">🥗 Eat water-rich foods like cucumber &amp; melon</div>
-        </div>
-
-        <!-- Set target modal -->
-        <div id="waterTargetModal" class="modalOverlay" style="display:none;" onclick="closeWaterTarget(event)">
-            <div class="modalCard" onclick="event.stopPropagation()">
-                <div class="modalTitle">Set Daily Goal</div>
-                <div class="formGroup">
-                    <div class="formLabel">Target (glasses)</div>
-                    <input id="waterTargetInput" class="formInput" type="number" min="1" max="20" placeholder="8">
-                </div>
-                <div class="btnGroup" style="margin-top:12px;">
-                    <button class="actionBtn" onclick="saveWaterTarget()">Save</button>
-                    <button class="secondaryBtn" onclick="closeWaterTarget()">Cancel</button>
-                </div>
+        <!-- ── APP HEADER ────────────────────────────────── -->
+        <div class="appHeader">
+            <div class="appHeaderLeft">
+                <img src="/static/images/logo.png" class="appHeaderLogo" alt="Ahira">
+                <div class="appHeaderBrand">AHIRA</div>
             </div>
+            <button class="profileBtn" id="profileBtn" onclick="openDrawer()">?</button>
         </div>
 
-    </div><!-- /waterScreen -->
+        <!-- ── SCROLLABLE CONTENT ─────────────────────────── -->
+        <div class="phoneContent">
 
+            <!-- HOME ──────────────────────────────────────── -->
+            <div id="homeScreen" class="appScreen">
 
-    <!-- ═══════════════════════════════════════════════════════
-         GROCERY SCREEN
-    ════════════════════════════════════════════════════════ -->
-    <div id="groceryScreen" class="screen" style="display:none;">
-
-        <div class="screenHeader">
-            <button class="backBtn" onclick="nav('wellnessScreen')">‹</button>
-            <span class="screenTitle">Grocery List</span>
-            <button class="addPillBtn" style="margin-left:auto;" onclick="openGroceryForm()">+ Add</button>
-        </div>
-
-        <!-- Stats strip -->
-        <div class="medSummaryStrip">
-            <div class="medSummaryBox">
-                <div class="medSummaryNum" id="groceryTotalCount">0</div>
-                <div class="medSummaryLabel">Total Items</div>
-            </div>
-            <div class="medSummaryBox" style="border-color:rgba(255,107,138,0.3);">
-                <div class="medSummaryNum" style="color:#ff6b8a;" id="groceryUrgentCount">0</div>
-                <div class="medSummaryLabel">Urgent</div>
-            </div>
-            <div class="medSummaryBox" style="border-color:rgba(100,200,100,0.3);">
-                <div class="medSummaryNum" style="color:#4caf50;" id="groceryDoneCount">0</div>
-                <div class="medSummaryLabel">Collected</div>
-            </div>
-        </div>
-
-        <!-- Category filter -->
-        <div class="filterTabs">
-            <button class="filterTab active" onclick="filterGrocery('all',this)">All</button>
-            <button class="filterTab" onclick="filterGrocery('veggies',this)">🥕 Veggies</button>
-            <button class="filterTab" onclick="filterGrocery('dairy',this)">🥛 Dairy</button>
-            <button class="filterTab" onclick="filterGrocery('snacks',this)">🍪 Snacks</button>
-            <button class="filterTab" onclick="filterGrocery('other',this)">📦 Other</button>
-        </div>
-
-        <!-- Add form modal -->
-        <div id="groceryFormModal" class="modalOverlay" style="display:none;" onclick="closeGroceryForm(event)">
-            <div class="modalCard" onclick="event.stopPropagation()">
-                <div class="modalTitle">Add Grocery Item</div>
-
-                <div class="formGroup">
-                    <div class="formLabel">Item Name</div>
-                    <input id="groceryName" class="formInput" placeholder="e.g. Spinach">
-                </div>
-
-                <div class="formRow">
-                    <div class="formGroup" style="flex:1;">
-                        <div class="formLabel">Quantity</div>
-                        <input id="groceryQty" class="formInput" type="number" placeholder="2">
-                    </div>
-                    <div class="formGroup" style="flex:1;">
-                        <div class="formLabel">Unit</div>
-                        <select id="groceryUnit" class="formInput">
-                            <option value="pcs">pcs</option>
-                            <option value="kg">kg</option>
-                            <option value="g">grams</option>
-                            <option value="L">litres</option>
-                            <option value="pack">pack</option>
-                            <option value="dozen">dozen</option>
-                        </select>
+                <div class="summary-card">
+                    <h3 id="homeGreeting">Daily Summary</h3>
+                    <div class="dateTimeRow"><span id="dateTime">Loading...</span></div>
+                    <div class="summary-status">
+                        <div class="statusBox">
+                            <div class="statusDot">🔴</div>
+                            <div class="statusNum" id="overdueNum">0</div>
+                            <div class="statusLabel">Overdue</div>
+                        </div>
+                        <div class="statusBox">
+                            <div class="statusDot">🟡</div>
+                            <div class="statusNum" id="todayNum">0</div>
+                            <div class="statusLabel">Today</div>
+                        </div>
+                        <div class="statusBox">
+                            <div class="statusDot">⚪</div>
+                            <div class="statusNum" id="upcomingNum">0</div>
+                            <div class="statusLabel">Upcoming</div>
+                        </div>
                     </div>
                 </div>
 
-                <div class="formRow">
-                    <div class="formGroup" style="flex:1;">
-                        <div class="formLabel">Category</div>
-                        <select id="groceryCat" class="formInput">
-                            <option value="veggies">🥕 Veggies</option>
-                            <option value="dairy">🥛 Dairy</option>
-                            <option value="snacks">🍪 Snacks</option>
-                            <option value="other">📦 Other</option>
-                        </select>
+                <!-- Daily Quote — immediately below summary -->
+                <div class="thoughtCard">
+                    <div class="quoteText" id="dailyQuote">"Loading..."</div>
+                </div>
+
+                <!-- Period card -->
+                <div class="periodHomeCard" onclick="navApp('periodScreen')">
+                    <div class="periodCalIcon">
+                        <span id="periodDaysBig">--</span><span>days</span>
                     </div>
-                    <div class="formGroup" style="flex:1;">
-                        <div class="formLabel">Urgency</div>
-                        <select id="groceryUrgency" class="formInput">
-                            <option value="normal">Normal</option>
-                            <option value="urgent">🔴 Urgent</option>
-                            <option value="low">Low</option>
-                        </select>
+                    <div style="flex:1;">
+                        <div style="font-weight:700;font-size:14px;color:var(--text-dark);">Period in <span id="periodDays">--</span> days</div>
+                        <div class="periodDots" id="homePeriodDots"></div>
+                    </div>
+                    <span style="color:var(--text-light);font-size:13px;">Track ›</span>
+                </div>
+
+                <!-- Water card -->
+                <div class="waterHomeCard">
+                    <div class="cardHeader">
+                        <span style="font-weight:700;font-size:15px;color:var(--text-dark);">Water Intake 💧</span>
+                        <span style="font-size:12px;color:var(--purple);cursor:pointer;" onclick="navApp('waterScreen')">Details ›</span>
+                    </div>
+                    <div class="waterDropRow" id="homeWaterDrops"></div>
+                    <div class="waterAddRow">
+                        <button class="waterAddBtn" onclick="addWater()">+</button>
+                        <span class="waterAddLabel"><span id="homeWaterCount">0</span> / <span id="homeWaterTarget">8</span> glasses</span>
                     </div>
                 </div>
 
-                <div class="formGroup">
-                    <div class="formLabel">Deadline (optional)</div>
-                    <input id="groceryDeadline" class="formInput" type="date">
+                <!-- Medicine card -->
+                <div onclick="navApp('medicineScreen')" style="background:linear-gradient(135deg,#ede9fe,#ddd6fe 55%,#c7d2fe);border:1.5px solid rgba(196,181,253,0.55);border-radius:22px;padding:16px;margin-top:12px;cursor:pointer;box-shadow:0 8px 28px rgba(138,108,255,0.13);display:flex;align-items:center;gap:14px;transition:transform 0.2s;position:relative;overflow:hidden;">
+                    <div style="position:absolute;width:80px;height:80px;border-radius:50%;background:#8a6cff;opacity:0.12;top:-20px;right:-16px;pointer-events:none;"></div>
+                    <div style="position:absolute;width:50px;height:50px;border-radius:50%;background:#c4b5fd;opacity:0.18;bottom:-14px;left:24px;pointer-events:none;"></div>
+                    <div style="width:52px;height:52px;border-radius:16px;flex-shrink:0;background:linear-gradient(135deg,#8a6cff,#a78bfa);display:flex;align-items:center;justify-content:center;font-size:24px;box-shadow:0 6px 16px rgba(138,108,255,0.35);position:relative;z-index:1;">💊</div>
+                    <div style="flex:1;min-width:0;position:relative;z-index:1;">
+                        <div style="font-weight:700;font-size:15px;color:#4c1d95;">Medications</div>
+                        <div id="homeMedSub" style="font-size:12px;color:#6b21a8;margin-top:2px;font-weight:500;">No medicines tracked</div>
+                        <div style="width:100%;height:6px;background:rgba(139,92,246,0.18);border-radius:10px;margin-top:10px;overflow:hidden;">
+                            <div id="homeMedBarFill" style="height:100%;width:0%;border-radius:10px;background:linear-gradient(90deg,#8a6cff,#a78bfa);transition:width 0.55s ease;"></div>
+                        </div>
+                        <div id="homeMedMeta" style="font-size:11px;color:#7c3aed;margin-top:5px;opacity:0.75;"></div>
+                    </div>
+                    <span style="font-size:20px;color:#7c3aed;opacity:0.5;position:relative;z-index:1;">›</span>
                 </div>
 
-                <div class="formGroup">
-                    <div class="formLabel">Notes</div>
-                    <input id="groceryNotes" class="formInput" placeholder="e.g. Organic preferred">
+                <!-- Grocery card -->
+                <div onclick="navApp('groceryScreen')" style="background:linear-gradient(135deg,#dcfce7,#bbf7d0 55%,#99f6e4);border:1.5px solid rgba(134,239,172,0.55);border-radius:22px;padding:16px;margin-top:12px;cursor:pointer;box-shadow:0 8px 28px rgba(34,197,94,0.12);display:flex;align-items:center;gap:14px;transition:transform 0.2s;position:relative;overflow:hidden;">
+                    <div style="position:absolute;width:80px;height:80px;border-radius:50%;background:#22c55e;opacity:0.12;top:-20px;right:-16px;pointer-events:none;"></div>
+                    <div style="position:absolute;width:50px;height:50px;border-radius:50%;background:#4ade80;opacity:0.18;bottom:-14px;left:24px;pointer-events:none;"></div>
+                    <div style="width:52px;height:52px;border-radius:16px;flex-shrink:0;background:linear-gradient(135deg,#16a34a,#4ade80);display:flex;align-items:center;justify-content:center;font-size:24px;box-shadow:0 6px 16px rgba(34,197,94,0.35);position:relative;z-index:1;">🛒</div>
+                    <div style="flex:1;min-width:0;position:relative;z-index:1;">
+                        <div style="font-weight:700;font-size:15px;color:#14532d;">Grocery</div>
+                        <div id="homeGrocerySub" style="font-size:12px;color:#166534;margin-top:2px;font-weight:500;">No items tracked</div>
+                        <div style="width:100%;height:6px;background:rgba(34,197,94,0.18);border-radius:10px;margin-top:10px;overflow:hidden;">
+                            <div id="homeGroceryBarFill" style="height:100%;width:0%;border-radius:10px;background:linear-gradient(90deg,#22c55e,#4ade80);transition:width 0.55s ease;"></div>
+                        </div>
+                        <div id="homeGroceryMeta" style="font-size:11px;color:#16a34a;margin-top:5px;opacity:0.75;"></div>
+                    </div>
+                    <span style="font-size:20px;color:#16a34a;opacity:0.5;position:relative;z-index:1;">›</span>
                 </div>
 
-                <div class="btnGroup" style="margin-top:14px;">
-                    <button class="actionBtn" onclick="addGroceryItem()">Add Item</button>
-                    <button class="secondaryBtn" onclick="closeGroceryForm()">Cancel</button>
+                <div id="homeAlerts"></div>
+
+            </div><!-- /homeScreen -->
+
+
+            <!-- CHAT ──────────────────────────────────────── -->
+            <div id="chatScreen" class="appScreen" style="display:none;">
+                <div class="chatHeader">
+                    <div class="chatAvatarWrap"><div class="chatAvatar">A</div><div class="chatOnlineDot"></div></div>
+                    <div><div class="chatHeaderName">Ahira</div><div class="chatHeaderStatus">Always here for you 💜</div></div>
                 </div>
+                <div class="chatBox" id="chat">
+                    <div class="chatDateDivider">Today</div>
+                    <div class="botMsgWrap">
+                        <div class="botAvatar">A</div>
+                        <div class="botMsg" id="chatWelcomeMsg">Hi! I'm Ahira 💜 How can I help you today?</div>
+                    </div>
+                    <div class="chatSuggestions">
+                        <button class="suggBtn" onclick="quickChat('What should I cook today?')">🍽 Meal ideas</button>
+                        <button class="suggBtn" onclick="quickChat('Plan my day')">☀️ Plan my day</button>
+                        <button class="suggBtn" onclick="quickChat('I feel stressed')">💆 I feel stressed</button>
+                    </div>
+                </div>
+                <div class="chatInputWrap">
+                    <div class="chatInputRow">
+                        <input id="message" class="chatInputField" placeholder="Message Ahira..."
+                            onkeydown="if(event.key==='Enter') sendMessage()">
+                        <button class="chatSendBtn" onclick="sendMessage()">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                        </button>
+                    </div>
+                </div>
+            </div><!-- /chatScreen -->
+
+
+            <!-- PLANNER ───────────────────────────────────── -->
+            <div id="plannerScreen" class="appScreen" style="display:none;">
+                <div class="plannerHeader">
+                    <div><div class="screenTitle">My Planner</div><div style="font-size:12px;color:var(--text-light);" id="plannerDateLabel"></div></div>
+                    <button class="addPillBtn" onclick="openAddTask()">+ Add</button>
+                </div>
+                <div class="calStrip" id="calStrip"></div>
+
+                <div id="addTaskModal" class="modalOverlay" style="display:none;" onclick="closeAddTask(event)">
+                    <div class="modalCard" onclick="event.stopPropagation()">
+                        <div class="modalTitle">New Task</div>
+                        <div class="formGroup"><div class="formLabel">Task Name</div><input id="taskInput" class="formInput" placeholder="What needs to be done?"></div>
+                        <div class="formRow">
+                            <div class="formGroup" style="flex:1;"><div class="formLabel">Date</div><input id="dateInput" class="formInput" type="date"></div>
+                            <div class="formGroup" style="flex:1;"><div class="formLabel">Time</div><input id="timeInput" class="formInput" type="time"></div>
+                        </div>
+                        <div class="formGroup"><div class="formLabel">Type</div>
+                            <div class="typeChips" id="taskTypeChips">
+                                <span class="typeChip active" data-val="task">📋 Task</span>
+                                <span class="typeChip" data-val="event">🎉 Event</span>
+                                <span class="typeChip" data-val="reminder">🔔 Reminder</span>
+                            </div>
+                        </div>
+                        <div class="formGroup"><div class="formLabel">Priority</div>
+                            <div class="typeChips" id="taskPriorityChips">
+                                <span class="typeChip active" data-val="normal">Normal</span>
+                                <span class="typeChip" data-val="high" style="color:#ff6b8a;">🔥 High</span>
+                                <span class="typeChip" data-val="low">Low</span>
+                            </div>
+                        </div>
+                        <div class="formGroup">
+                            <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-mid);cursor:pointer;">
+                                <input type="checkbox" id="pinTask" style="accent-color:var(--purple);width:16px;height:16px;"> 📌 Pin as Upcoming Event
+                            </label>
+                        </div>
+                        <div class="btnGroup" style="margin-top:14px;">
+                            <button class="actionBtn" onclick="saveTask()">Save Task</button>
+                            <button class="secondaryBtn" onclick="closeAddTask()">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="pinnedSection" style="display:none;"><div class="sectionLabel">📌 Pinned Events</div><div id="pinnedList"></div></div>
+                <div class="sectionLabel">Today's Tasks</div><div id="todayTaskList"></div>
+                <div class="sectionLabel" style="margin-top:14px;">Upcoming</div><div id="upcomingTaskList"></div>
+                <div class="sectionLabel" style="margin-top:14px;cursor:pointer;" onclick="toggleCompleted()">Done <span id="completedToggleArrow">›</span></div>
+                <div id="completedTaskList" style="display:none;"></div>
+            </div><!-- /plannerScreen -->
+
+
+            <!-- WELLNESS ──────────────────────────────────── -->
+            <div id="wellnessScreen" class="appScreen" style="display:none;">
+                <h2 class="sectionTitle">Wellness</h2>
+                <p style="font-size:13px;color:var(--text-light);margin-bottom:4px;">Your daily health overview</p>
+
+                <!-- Mood checker — placed above period tracker -->
+                <div class="moodCard">
+                    <div class="moodCardBlob"></div>
+                    <div class="moodCardTitle">How are you feeling? 💜</div>
+                    <div class="moodCardSub">Tap your mood — Ahira responds</div>
+                    <div class="moodGrid">
+                        <button class="moodBtn" onclick="selectMood(this,'happy','😊')"><span class="moodEmoji">😊</span><span class="moodLabel">Happy</span></button>
+                        <button class="moodBtn" onclick="selectMood(this,'calm','😌')"><span class="moodEmoji">😌</span><span class="moodLabel">Calm</span></button>
+                        <button class="moodBtn" onclick="selectMood(this,'tired','😴')"><span class="moodEmoji">😴</span><span class="moodLabel">Tired</span></button>
+                        <button class="moodBtn" onclick="selectMood(this,'sad','😢')"><span class="moodEmoji">😢</span><span class="moodLabel">Sad</span></button>
+                        <button class="moodBtn" onclick="selectMood(this,'stressed','😤')"><span class="moodEmoji">😤</span><span class="moodLabel">Stressed</span></button>
+                        <button class="moodBtn" onclick="selectMood(this,'anxious','😰')"><span class="moodEmoji">😰</span><span class="moodLabel">Anxious</span></button>
+                        <button class="moodBtn" onclick="selectMood(this,'energetic','⚡')"><span class="moodEmoji">⚡</span><span class="moodLabel">Energetic</span></button>
+                        <button class="moodBtn" onclick="selectMood(this,'grateful','🥰')"><span class="moodEmoji">🥰</span><span class="moodLabel">Grateful</span></button>
+                    </div>
+                    <div class="moodResponse" id="moodResponse"></div>
+                </div>
+                <div class="wellnessCard" onclick="navApp('periodScreen')">
+                    <div class="wellnessIconBox" style="background:linear-gradient(135deg,rgba(255,182,193,0.5),rgba(255,154,118,0.4));">🌸</div>
+                    <div class="wellnessCardInfo"><div class="wellnessCardTitle">Period Tracker</div><div class="wellnessCardSub" id="wellPeriodSub">Set your last period date</div></div>
+                    <div class="wellnessArrow">›</div>
+                </div>
+                <div class="wellnessCard" onclick="navApp('medicineScreen')">
+                    <div class="wellnessIconBox" style="background:linear-gradient(135deg,rgba(196,181,253,0.45),rgba(147,197,253,0.35));">💊</div>
+                    <div class="wellnessCardInfo"><div class="wellnessCardTitle">Medication Tracker</div><div class="wellnessCardSub" id="wellMedSub">No medicines tracked</div></div>
+                    <div class="wellnessArrow">›</div>
+                </div>
+                <div class="wellnessCard" onclick="navApp('waterScreen')">
+                    <div class="wellnessIconBox" style="background:linear-gradient(135deg,rgba(147,210,253,0.5),rgba(100,180,255,0.35));">💧</div>
+                    <div class="wellnessCardInfo"><div class="wellnessCardTitle">Water Intake</div><div class="wellnessCardSub" id="wellWaterSub">0 / 8 glasses today</div></div>
+                    <div class="wellnessArrow">›</div>
+                </div>
+                <div class="wellnessCard" onclick="navApp('groceryScreen')">
+                    <div class="wellnessIconBox" style="background:linear-gradient(135deg,rgba(167,243,208,0.5),rgba(110,231,183,0.35));">🛒</div>
+                    <div class="wellnessCardInfo"><div class="wellnessCardTitle">Grocery List</div><div class="wellnessCardSub" id="wellGrocerySub">Manage your grocery</div></div>
+                    <div class="wellnessArrow">›</div>
+                </div>
+            </div><!-- /wellnessScreen -->
+
+
+            <!-- PERIOD ────────────────────────────────────── -->
+            <div id="periodScreen" class="appScreen" style="display:none;">
+                <div class="screenHeader"><button class="backBtn" onclick="navApp('wellnessScreen')">‹</button><span class="screenTitle">Period Tracker</span></div>
+                <div class="periodBigCard"><div class="periodBigLabel" id="periodBigLabel">Next Period in -- Days</div><div class="progressBar" style="margin-top:14px;"><div id="periodFillDetail"></div></div><div class="periodDateLabel" id="periodDateLabel">Set your last period date</div></div>
+                <div class="cardSoft">
+                    <div class="cardHeader">Cycle Info</div>
+                    <div class="infoRow"><span>Cycle Length</span><b>28 days</b></div>
+                    <div class="infoRow"><span>Next Period</span><b><span id="periodDaysDetail">--</span> days</b></div>
+                    <div class="infoRow"><span>Ovulation</span><b>Day 14</b></div>
+                </div>
+                <div class="cardSoft">
+                    <div class="cardHeader" style="margin-bottom:8px;">Cycle Insights</div>
+                    <div class="insightItem"><span class="insightDot" style="background:#ffb3c6;"></span>Prepare for PMS symptoms &amp; cravings</div>
+                    <div class="insightItem"><span class="insightDot" style="background:#93c5fd;"></span>Stay hydrated during this time</div>
+                    <div class="insightItem"><span class="insightDot" style="background:#d1d5db;"></span>Use heating pad for cramps</div>
+                </div>
+                <div class="cardSoft">
+                    <div class="cardHeader" style="margin-bottom:10px;">Cycle Timeline</div>
+                    <div class="cycleTimeline"><div class="cyclePhase" style="flex:1;background:#ffb3c6;"></div><div class="cyclePhase" style="flex:2;background:#cdb4db;"></div><div class="cyclePhase" style="flex:1;background:#a2d2ff;"></div><div class="cyclePhase" style="flex:2;background:#bde0fe;"></div></div>
+                    <div class="cycleLabels"><span>Period</span><span>Follicular</span><span>Ovulation</span><span>Luteal</span></div>
+                </div>
+                <div class="btnGroup"><button class="actionBtn" onclick="setPeriodDate()">Update Date</button><button class="secondaryBtn" onclick="navApp('wellnessScreen')">← Back</button></div>
+            </div><!-- /periodScreen -->
+
+
+            <!-- MEDICINE ──────────────────────────────────── -->
+            <div id="medicineScreen" class="appScreen" style="display:none;">
+                <div class="screenHeader"><button class="backBtn" onclick="navApp('wellnessScreen')">‹</button><span class="screenTitle">Medications</span><button class="addPillBtn" style="margin-left:auto;" onclick="toggleMedicineForm()">+ Add</button></div>
+                <div class="medSummaryStrip">
+                    <div class="medSummaryBox"><div class="medSummaryNum" id="medTotalCount">0</div><div class="medSummaryLabel">Total</div></div>
+                    <div class="medSummaryBox" style="border-color:rgba(255,107,138,0.3);"><div class="medSummaryNum" style="color:#ff6b8a;" id="medLowCount">0</div><div class="medSummaryLabel">Low Stock</div></div>
+                    <div class="medSummaryBox" style="border-color:rgba(100,200,100,0.3);"><div class="medSummaryNum" style="color:#4caf50;" id="medTakenCount">0</div><div class="medSummaryLabel">Taken Today</div></div>
+                </div>
+                <div class="filterTabs">
+                    <button class="filterTab active" onclick="filterMeds('all',this)">All</button>
+                    <button class="filterTab" onclick="filterMeds('morning',this)">☀️ Morning</button>
+                    <button class="filterTab" onclick="filterMeds('afternoon',this)">🌤 Noon</button>
+                    <button class="filterTab" onclick="filterMeds('evening',this)">🌙 Evening</button>
+                </div>
+                <div id="medicineList"></div>
+                <button class="actionBtn" onclick="toggleMedicineForm()">+ Add Medicine</button>
+                <div id="medicineForm" class="medFormCard" style="display:none;">
+                    <div class="modalTitle" style="margin-bottom:12px;">Add Medicine</div>
+                    <div class="formGroup"><div class="formLabel">Medicine Name</div><input id="medName" class="formInput" placeholder="e.g. Vitamin D3"></div>
+                    <div class="formRow">
+                        <div class="formGroup" style="flex:1;"><div class="formLabel">Dose (mg)</div><input id="medDose" class="formInput" type="number" placeholder="500"></div>
+                        <div class="formGroup" style="flex:1;"><div class="formLabel">Stock</div><input id="medStock" class="formInput" type="number" placeholder="30"></div>
+                    </div>
+                    <div class="formRow">
+                        <div class="formGroup" style="flex:1;"><div class="formLabel">Time</div><input id="medTime" class="formInput" type="time"></div>
+                        <div class="formGroup" style="flex:1;"><div class="formLabel">Frequency</div>
+                            <select id="medFrequency" class="formInput"><option value="morning">Morning</option><option value="afternoon">Afternoon</option><option value="evening">Evening</option><option value="weekly">Weekly</option></select>
+                        </div>
+                    </div>
+                    <div class="formGroup"><div class="formLabel">Priority</div>
+                        <div class="typeChips" id="medPriorityChips"><span class="typeChip active" data-val="normal">Normal</span><span class="typeChip" data-val="high" style="color:#ff6b8a;">🔥 Critical</span></div>
+                    </div>
+                    <div class="formGroup"><div class="formLabel">Notes</div><input id="medNotes" class="formInput" placeholder="e.g. Take with food"></div>
+                    <div class="btnGroup"><button class="actionBtn" onclick="addMedicine()">Save</button><button class="secondaryBtn" onclick="toggleMedicineForm()">Cancel</button></div>
+                </div>
+            </div><!-- /medicineScreen -->
+
+
+            <!-- WATER ─────────────────────────────────────── -->
+            <div id="waterScreen" class="appScreen" style="display:none;">
+                <div class="screenHeader"><button class="backBtn" onclick="navApp('wellnessScreen')">‹</button><span class="screenTitle">Water Intake</span><button class="addPillBtn" style="margin-left:auto;" onclick="openWaterTarget()">Set Goal</button></div>
+                <div class="waterRingCard">
+                    <div class="waterRingOuter">
+                        <svg class="waterRingSvg" viewBox="0 0 120 120">
+                            <defs>
+                                <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" stop-color="#6C3FCE"/>
+                                    <stop offset="100%" stop-color="#F472B6"/>
+                                </linearGradient>
+                            </defs>
+                            <circle class="ringTrack" cx="60" cy="60" r="50"/>
+                            <circle class="ringFill" id="waterRingCircle" cx="60" cy="60" r="50" stroke-dasharray="314" stroke-dashoffset="314"/>
+                        </svg>
+                        <div class="waterRingInner"><div class="waterRingCount" id="detailWaterCount">0</div><div class="waterRingLabel">glasses</div></div>
+                    </div>
+                    <div style="text-align:center;margin-top:8px;"><span style="font-size:13px;color:var(--text-mid);">Target: <b id="waterTargetLabel">8</b> · <span id="waterMlLabel">0 ml</span></span></div>
+                </div>
+                <div class="waterGlassGrid" id="detailWaterGlasses"></div>
+                <div class="btnGroup"><button class="actionBtn" onclick="addWater()">+ Add Glass</button><button class="secondaryBtn" onclick="removeWater()">– Remove</button></div>
+                <button class="secondaryBtn" style="margin-top:6px;" onclick="resetWater()">↺ Reset Today</button>
+                <div class="sectionLabel" style="margin-top:16px;">⏱ Today's Log</div>
+                <div id="waterLog" class="waterLogList"></div>
+                <div class="sectionLabel" style="margin-top:16px;">📊 Weekly Progress</div>
+                <div class="waterChartWrap"><div class="waterBars" id="waterBarChart"></div><div class="waterBarLabels" id="waterBarLabels"></div></div>
+                <div class="cardSoft" style="margin-top:12px;">
+                    <div class="cardHeader" style="margin-bottom:8px;">💡 Hydration Tips</div>
+                    <div class="tipItem">🌅 Start your morning with a full glass of water</div>
+                    <div class="tipItem">🍋 Add lemon slices for extra hydration</div>
+                    <div class="tipItem">🔔 Set alarms every 2 hours as reminders</div>
+                    <div class="tipItem">🥗 Eat water-rich foods like cucumber &amp; melon</div>
+                </div>
+                <div id="waterTargetModal" class="modalOverlay" style="display:none;" onclick="closeWaterTarget(event)">
+                    <div class="modalCard" onclick="event.stopPropagation()">
+                        <div class="modalTitle">Set Daily Goal</div>
+                        <div class="formGroup"><div class="formLabel">Target (glasses)</div><input id="waterTargetInput" class="formInput" type="number" min="1" max="20" placeholder="8"></div>
+                        <div class="btnGroup" style="margin-top:12px;"><button class="actionBtn" onclick="saveWaterTarget()">Save</button><button class="secondaryBtn" onclick="closeWaterTarget()">Cancel</button></div>
+                    </div>
+                </div>
+            </div><!-- /waterScreen -->
+
+
+            <!-- GROCERY ───────────────────────────────────── -->
+            <div id="groceryScreen" class="appScreen" style="display:none;">
+                <div class="screenHeader"><button class="backBtn" onclick="navApp('wellnessScreen')">‹</button><span class="screenTitle">Grocery List</span><button class="addPillBtn" style="margin-left:auto;" onclick="openGroceryForm()">+ Add</button></div>
+                <div class="medSummaryStrip">
+                    <div class="medSummaryBox"><div class="medSummaryNum" id="groceryTotalCount">0</div><div class="medSummaryLabel">Total Items</div></div>
+                    <div class="medSummaryBox" style="border-color:rgba(255,107,138,0.3);"><div class="medSummaryNum" style="color:#ff6b8a;" id="groceryUrgentCount">0</div><div class="medSummaryLabel">Urgent</div></div>
+                    <div class="medSummaryBox" style="border-color:rgba(100,200,100,0.3);"><div class="medSummaryNum" style="color:#4caf50;" id="groceryDoneCount">0</div><div class="medSummaryLabel">Collected</div></div>
+                </div>
+                <div class="filterTabs">
+                    <button class="filterTab active" onclick="filterGrocery('all',this)">All</button>
+                    <button class="filterTab" onclick="filterGrocery('veggies',this)">🥕 Veggies</button>
+                    <button class="filterTab" onclick="filterGrocery('dairy',this)">🥛 Dairy</button>
+                    <button class="filterTab" onclick="filterGrocery('snacks',this)">🍪 Snacks</button>
+                    <button class="filterTab" onclick="filterGrocery('other',this)">📦 Other</button>
+                </div>
+                <div id="groceryFormModal" class="modalOverlay" style="display:none;" onclick="closeGroceryForm(event)">
+                    <div class="modalCard" onclick="event.stopPropagation()">
+                        <div class="modalTitle">Add Grocery Item</div>
+                        <div class="formGroup"><div class="formLabel">Item Name</div><input id="groceryName" class="formInput" placeholder="e.g. Spinach"></div>
+                        <div class="formRow">
+                            <div class="formGroup" style="flex:1;"><div class="formLabel">Quantity</div><input id="groceryQty" class="formInput" type="number" placeholder="2"></div>
+                            <div class="formGroup" style="flex:1;"><div class="formLabel">Unit</div><select id="groceryUnit" class="formInput"><option value="pcs">pcs</option><option value="kg">kg</option><option value="g">grams</option><option value="L">litres</option><option value="pack">pack</option><option value="dozen">dozen</option></select></div>
+                        </div>
+                        <div class="formRow">
+                            <div class="formGroup" style="flex:1;"><div class="formLabel">Category</div><select id="groceryCat" class="formInput"><option value="veggies">🥕 Veggies</option><option value="dairy">🥛 Dairy</option><option value="snacks">🍪 Snacks</option><option value="other">📦 Other</option></select></div>
+                            <div class="formGroup" style="flex:1;"><div class="formLabel">Urgency</div><select id="groceryUrgency" class="formInput"><option value="normal">Normal</option><option value="urgent">🔴 Urgent</option><option value="low">Low</option></select></div>
+                        </div>
+                        <div class="formGroup"><div class="formLabel">Deadline (optional)</div><input id="groceryDeadline" class="formInput" type="date"></div>
+                        <div class="formGroup"><div class="formLabel">Notes</div><input id="groceryNotes" class="formInput" placeholder="e.g. Organic preferred"></div>
+                        <div class="btnGroup" style="margin-top:14px;"><button class="actionBtn" onclick="addGroceryItem()">Add Item</button><button class="secondaryBtn" onclick="closeGroceryForm()">Cancel</button></div>
+                    </div>
+                </div>
+                <div id="urgentGrocerySection"><div class="sectionLabel">🔴 Urgent</div><div id="urgentGroceryList"></div></div>
+                <div class="sectionLabel" style="margin-top:12px;">🧺 All Items</div>
+                <div id="groceryFullList"></div>
+            </div><!-- /groceryScreen -->
+
+        </div><!-- /phoneContent -->
+
+        <!-- ── BOTTOM NAV (flex child — never overlaps content) -->
+        <div class="nav" id="mainNav">
+            <button class="navItem active" onclick="navApp('homeScreen',this)">
+                <span class="navIcon">🏠</span><span class="navLabel">Home</span>
+            </button>
+            <button class="navItem" onclick="navApp('chatScreen',this)">
+                <span class="navIcon">💬</span><span class="navLabel">Ahira</span>
+            </button>
+            <button class="navItem" onclick="navApp('plannerScreen',this)">
+                <span class="navIcon">📅</span><span class="navLabel">Planner</span>
+            </button>
+            <button class="navItem" onclick="navApp('wellnessScreen',this)">
+                <span class="navIcon">❤️</span><span class="navLabel">Wellness</span>
+            </button>
+        </div>
+
+        <!-- ── PROFILE DRAWER ──────────────────────────────── -->
+        <div class="drawerOverlay" id="drawerOverlay" onclick="closeDrawer()"></div>
+
+        <div class="profileDrawer" id="profileDrawer">
+            <!-- Gradient header -->
+            <div class="drawerHeader">
+                <button class="drawerCloseBtn" onclick="closeDrawer()">✕</button>
+                <div class="drawerAvatar" id="drawerAvatar">?</div>
+                <div class="drawerName"  id="drawerName">Loading...</div>
+                <div class="drawerEmail" id="drawerEmail">...</div>
+            </div>
+
+            <!-- Drawer body -->
+            <div class="drawerBody">
+
+                <!-- Account -->
+                <div class="drawerSectionTitle">Account</div>
+                <div class="drawerItem">
+                    <div class="drawerItemIcon" style="background:rgba(138,108,255,0.1);">👤</div>
+                    <div class="drawerItemText"><div class="drawerItemLabel">Edit Profile</div><div class="drawerItemSub">Name and email</div></div>
+                    <span class="drawerItemArrow">›</span>
+                </div>
+                <div class="drawerItem">
+                    <div class="drawerItemIcon" style="background:rgba(255,182,193,0.2);">🌸</div>
+                    <div class="drawerItemText"><div class="drawerItemLabel">Period Settings</div><div class="drawerItemSub">Cycle length, start date</div></div>
+                    <span class="drawerItemArrow" onclick="navApp('periodScreen');closeDrawer()">›</span>
+                </div>
+
+                <div class="drawerDivider"></div>
+
+                <!-- Notifications -->
+                <div class="drawerSectionTitle">Notifications</div>
+                <div class="drawerItem">
+                    <div class="drawerItemIcon" style="background:rgba(251,191,36,0.15);">🔔</div>
+                    <div class="drawerItemText"><div class="drawerItemLabel">Reminder Alerts</div><div class="drawerItemSub">Task and event reminders</div></div>
+                    <button class="drawerToggle on" id="toggleReminders" onclick="toggleSetting(this)"></button>
+                </div>
+                <div class="drawerItem">
+                    <div class="drawerItemIcon" style="background:rgba(147,197,253,0.2);">💧</div>
+                    <div class="drawerItemText"><div class="drawerItemLabel">Water Reminders</div><div class="drawerItemSub">Hourly hydration nudges</div></div>
+                    <button class="drawerToggle on" id="toggleWater" onclick="toggleSetting(this)"></button>
+                </div>
+                <div class="drawerItem">
+                    <div class="drawerItemIcon" style="background:rgba(196,181,253,0.2);">💊</div>
+                    <div class="drawerItemText"><div class="drawerItemLabel">Medicine Reminders</div><div class="drawerItemSub">Daily medicine alerts</div></div>
+                    <button class="drawerToggle on" id="toggleMedicine" onclick="toggleSetting(this)"></button>
+                </div>
+                <div class="drawerItem">
+                    <div class="drawerItemIcon" style="background:rgba(255,182,193,0.2);">🌸</div>
+                    <div class="drawerItemText"><div class="drawerItemLabel">Period Alerts</div><div class="drawerItemSub">Cycle predictions &amp; PMS</div></div>
+                    <button class="drawerToggle on" id="togglePeriod" onclick="toggleSetting(this)"></button>
+                </div>
+
+                <div class="drawerDivider"></div>
+
+                <!-- Preferences -->
+                <div class="drawerSectionTitle">Preferences</div>
+                <div class="drawerItem">
+                    <div class="drawerItemIcon" style="background:rgba(167,243,208,0.2);">🎯</div>
+                    <div class="drawerItemText"><div class="drawerItemLabel">Daily Water Goal</div><div class="drawerItemSub" id="drawerWaterGoal">8 glasses per day</div></div>
+                    <span class="drawerItemArrow" onclick="navApp('waterScreen');closeDrawer();openWaterTarget()">›</span>
+                </div>
+                <div class="drawerItem">
+                    <div class="drawerItemIcon" style="background:rgba(252,211,77,0.15);">✨</div>
+                    <div class="drawerItemText"><div class="drawerItemLabel">Daily Quotes</div><div class="drawerItemSub">Motivational quote rotation</div></div>
+                    <button class="drawerToggle on" id="toggleQuotes" onclick="toggleSetting(this)"></button>
+                </div>
+
+                <div class="drawerDivider"></div>
+
+                <!-- About -->
+                <div class="drawerSectionTitle">About</div>
+                <div class="drawerItem">
+                    <div class="drawerItemIcon" style="background:rgba(138,108,255,0.1);">💜</div>
+                    <div class="drawerItemText"><div class="drawerItemLabel">About Ahira</div><div class="drawerItemSub">Version 1.0 · Always by your side</div></div>
+                    <span class="drawerItemArrow">›</span>
+                </div>
+
+                <!-- Logout -->
+                <button class="drawerLogoutBtn" onclick="submitLogout()">
+                    <span>🚪</span> Sign Out
+                </button>
+
             </div>
         </div>
 
-        <!-- Urgent items -->
-        <div id="urgentGrocerySection">
-            <div class="sectionLabel">🔴 Urgent</div>
-            <div id="urgentGroceryList"></div>
-        </div>
-
-        <!-- All items -->
-        <div class="sectionLabel" style="margin-top:12px;">🧺 All Items</div>
-        <div id="groceryFullList"></div>
-
-    </div><!-- /groceryScreen -->
-
-    </div><!-- /phoneContent -->
-
-    <!-- ═══ BOTTOM NAV ═══════════════════════════════════════ -->
-    <div class="nav">
-        <button class="navBtn active" onclick="nav('homeScreen',this)">🏠</button>
-        <button class="navBtn"        onclick="nav('chatScreen',this)">💬</button>
-        <button class="navBtn"        onclick="nav('plannerScreen',this)">📅</button>
-        <button class="navBtn"        onclick="nav('wellnessScreen',this)">❤️</button>
-    </div>
+    </div><!-- /appWrapper -->
 
 </div><!-- /phone -->
 <script src="/static/chat.js"></script>
