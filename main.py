@@ -161,10 +161,12 @@ def health():
 
 # ── Pages ────────────────────────────────────────────────────
 
+# ── Pages ────────────────────────────────────────────────────
+
 @app.get("/")
 def home(request: Request):
-    return static.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse("index.html", {"request": request})
 
 @app.get("/db-test")
 def db_test(request: Request):
-    return static.TemplateResponse("db_test.html", {"request": request})
+    return templates.TemplateResponse("db_test.html", {"request": request})
