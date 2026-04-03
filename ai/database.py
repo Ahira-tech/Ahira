@@ -30,18 +30,52 @@ def _try_import_psycopg2():
 _psycopg2 = _try_import_psycopg2()
 USE_POSTGRES = bool(_psycopg2 and POSTGRES_URL)
 
+def _try_import_psycopg2():
+    try:
+        import psycopg2
+        import psycopg2.extras
+        return psycopg2
+    except ImportError:
+        try:
+            import pg8000
+            return None  # handled separately
+        except ImportError:
+            return None
+
+def _try_import_psycopg2():
+    try:
+        import psycopg2
+        return psycopg2
+    except ImportError:
+        pass
+    try:
+        import pg8000
+        return "pg8000"
+    except ImportError:
+        return None
+
+_psycopg2 = _try_import_psycopg2()
+USE_POSTGRES = bool(_psycopg2 and POSTGRES_URL)
+
 
 def get_connection():
-    """Returns a DB connection — PostgreSQL if available, else SQLite."""
     if USE_POSTGRES:
-        conn = _psycopg2.connect(POSTGRES_URL)
-        return conn
+        if _psycopg2 == "pg8000":
+            import pg8000.native
+            return pg8000.native.Connection(
+                user="ahira_db_user",
+                password="q21CDcVJZXZhIfGBqT7V6E8ibnM33dse",
+                host="dpg-d77ok1ua2pns73au3t3g-a.oregon-postgres.render.com",
+                database="ahira_db",
+                ssl_context=True
+            )
+        else:
+            return _psycopg2.connect(POSTGRES_URL)
     else:
         os.makedirs("data", exist_ok=True)
         conn = sqlite3.connect(SQLITE_PATH)
         conn.row_factory = sqlite3.Row
         return conn
-
 
 def _placeholder(use_postgres: bool) -> str:
     """SQL placeholder for parameters."""
