@@ -15,15 +15,21 @@ MONGODB_URL = os.environ.get(
 
 
 def _get_mongo_collection(collection_name: str):
-    """Returns a MongoDB collection or None if unavailable."""
     try:
         import ssl
         from pymongo import MongoClient
+        ctx = ssl.create_default_context()
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
         client = MongoClient(
             MONGODB_URL,
             serverSelectionTimeoutMS=5000,
+            tlsCAFile=None,
             tls=True,
-            tlsAllowInvalidCertificates=True
+            tlsAllowInvalidCertificates=True,
+            tlsAllowInvalidHostnames=True,
+            ssl_context=ctx
         )
         client.admin.command("ping")
         db = client["ahira_db"]
@@ -32,6 +38,29 @@ def _get_mongo_collection(collection_name: str):
         print(f"[MongoDB] Could not connect: {e}")
         return None
 
+
+def get_mongo_status() -> dict:
+    try:
+        import ssl
+        from pymongo import MongoClient
+        ctx = ssl.create_default_context()
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        client = MongoClient(
+            MONGODB_URL,
+            serverSelectionTimeoutMS=5000,
+            tls=True,
+            tlsAllowInvalidCertificates=True,
+            tlsAllowInvalidHostnames=True,
+            ssl_context=ctx
+        )
+        client.admin.command("ping")
+        db = client["ahira_db"]
+        collections = db.list_collection_names()
+        return {"connected": True, "collections": collections}
+    except Exception as e:
+        return {"connected": False, "error": str(e)}
 # ─────────────────────────────────────────────────────────────
 # REMINDERS — stored in PostgreSQL / SQLite
 # ─────────────────────────────────────────────────────────────
@@ -126,19 +155,3 @@ def save_chat_log(user_id: int, user_message: str, bot_reply: str):
         print(f"[MongoDB] chat log failed: {e}")
 
 
-def get_mongo_status() -> dict:
-    """Check MongoDB connectivity — used by test page."""
-    try:
-        from pymongo import MongoClient
-        client = MongoClient(
-            MONGODB_URL,
-            serverSelectionTimeoutMS=5000,
-            tls=True,
-            tlsAllowInvalidCertificates=True
-        )
-        client.admin.command("ping")
-        db = client["ahira_db"]
-        collections = db.list_collection_names()
-        return {"connected": True, "collections": collections}
-    except Exception as e:
-        return {"connected": False, "error": str(e)}
