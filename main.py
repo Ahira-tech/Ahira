@@ -7,9 +7,10 @@ from typing import List, Optional
 
 from ai.database import (
     init_db, create_user, authenticate_user,
-    create_session, get_user_from_token, delete_session
+    create_session, get_user_from_token, delete_session,
+    get_db_status
 )
-from ai.reminders import get_reminders, add_reminder, delete_reminder, toggle_reminder
+from ai.reminders import get_reminders, add_reminder, delete_reminder, toggle_reminder, get_mongo_status
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
@@ -139,6 +140,18 @@ def toggle_task(reminder_id: int, request: Request):
     uid  = user["id"] if user else 1
     toggle_reminder(reminder_id, uid)
     return {"status": "updated"}
+
+
+# ── DB Status (for test page) ─────────────────────────────────
+
+@app.get("/db-status")
+def db_status():
+    postgres_info = get_db_status()
+    mongo_info    = get_mongo_status()
+    return {
+        "postgresql": postgres_info,
+        "mongodb":    mongo_info
+    }
 
 
 @app.get("/health")
