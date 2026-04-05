@@ -4,53 +4,24 @@ import hashlib
 import secrets
 
 # ─────────────────────────────────────────────────────────────
-# CONFIG — reads from environment variables first, then falls back
-# to hardcoded values (set these in Render dashboard)
+# CONFIG
 # ─────────────────────────────────────────────────────────────
 
 POSTGRES_URL = os.environ.get(
     "POSTGRES_URL",
-    "postgresql://ahira_db_user:q21CDcVJZXZhIfGBqT7V6E8ibnM33dse@dpg-d77ok1ua2pns73au3t3g-a/ahira_db"
+    "postgresql://postgres:Himanshu@9119@db.vshbubcofxoekbdseiqt.supabase.co:5432/postgres"
 )
 
 SQLITE_PATH = "data/ahira.db"
 
 # ─────────────────────────────────────────────────────────────
-# BACKEND DETECTION — try PostgreSQL, fall back to SQLite
+# BACKEND DETECTION
 # ─────────────────────────────────────────────────────────────
 
 def _try_import_psycopg2():
     try:
         import psycopg2
-        import psycopg2.extras
         return psycopg2
-    except ImportError:
-        return None
-
-_psycopg2 = _try_import_psycopg2()
-USE_POSTGRES = bool(_psycopg2 and POSTGRES_URL)
-
-def _try_import_psycopg2():
-    try:
-        import psycopg2
-        import psycopg2.extras
-        return psycopg2
-    except ImportError:
-        try:
-            import pg8000
-            return None  # handled separately
-        except ImportError:
-            return None
-
-def _try_import_psycopg2():
-    try:
-        import psycopg2
-        return psycopg2
-    except ImportError:
-        pass
-    try:
-        import pg8000
-        return "pg8000"
     except ImportError:
         return None
 
@@ -60,30 +31,19 @@ USE_POSTGRES = bool(_psycopg2 and POSTGRES_URL)
 
 def get_connection():
     if USE_POSTGRES:
-        if _psycopg2 == "pg8000":
-            import pg8000.native
-            return pg8000.native.Connection(
-                user="ahira_db_user",
-                password="q21CDcVJZXZhIfGBqT7V6E8ibnM33dse",
-                host="dpg-d77ok1ua2pns73au3t3g-a.oregon-postgres.render.com",
-                database="ahira_db",
-                ssl_context=True
-            )
-        else:
-            return _psycopg2.connect(POSTGRES_URL)
+        return _psycopg2.connect(POSTGRES_URL)
     else:
         os.makedirs("data", exist_ok=True)
         conn = sqlite3.connect(SQLITE_PATH)
         conn.row_factory = sqlite3.Row
         return conn
 
+
 def _placeholder(use_postgres: bool) -> str:
-    """SQL placeholder for parameters."""
     return "%s" if use_postgres else "?"
 
 
 def _fetchrow(cursor):
-    """Fetch one row as dict regardless of backend."""
     if USE_POSTGRES:
         row = cursor.fetchone()
         if row is None:
@@ -96,7 +56,6 @@ def _fetchrow(cursor):
 
 
 def _fetchall(cursor):
-    """Fetch all rows as list of dicts regardless of backend."""
     if USE_POSTGRES:
         rows = cursor.fetchall()
         if not rows:
@@ -114,7 +73,6 @@ def _fetchall(cursor):
 def init_db():
     conn = get_connection()
     c = conn.cursor()
-    p = _placeholder(USE_POSTGRES)
 
     if USE_POSTGRES:
         c.execute("""
@@ -147,7 +105,6 @@ def init_db():
             )
         """)
     else:
-        # SQLite fallback
         c.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -177,7 +134,6 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # Safe migrations for old SQLite databases
         migrations = [
             "ALTER TABLE reminders ADD COLUMN user_id INTEGER DEFAULT 1",
             "ALTER TABLE reminders ADD COLUMN date TEXT",
@@ -194,7 +150,7 @@ def init_db():
 
     conn.commit()
     conn.close()
-    print(f"[DB] Initialized using {'PostgreSQL' if USE_POSTGRES else 'SQLite'}")
+    print(f"[DB] Initialized using {'PostgreSQL (Supabase)' if USE_POSTGRES else 'SQLite'}")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -228,7 +184,7 @@ def create_user(name: str, email: str, password: str):
     except Exception as e:
         err = str(e).lower()
         if "unique" in err or "duplicate" in err:
-            return None  # email already exists
+            return None
         raise
     finally:
         conn.close()
@@ -284,11 +240,10 @@ def delete_session(token: str):
 
 
 # ─────────────────────────────────────────────────────────────
-# STATUS CHECK (used by test page)
+# STATUS CHECK
 # ─────────────────────────────────────────────────────────────
 
 def get_db_status() -> dict:
-    """Returns info about which database backend is active."""
     return {
         "backend": "postgresql" if USE_POSTGRES else "sqlite",
         "postgres_url_set": bool(POSTGRES_URL),
