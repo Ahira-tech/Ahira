@@ -1,181 +1,70 @@
 """
-database.py — Ahira
-Uses PostgreSQL (Supabase) exclusively.
-No SQLite fallback — if connection fails, startup fails loudly.
+database.py
+-----------
+Sets up the SQLAlchemy engine and session.
+All other files import from here.
 """
 
 import os
-import hashlib
-import secrets
-import psycopg2
-import psycopg2.extras
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker, declarative_base
 
-# ─────────────────────────────────────────────────────────────
-# CONFIG
-# ─────────────────────────────────────────────────────────────
+# ── 1. Read DATABASE_URL from environment ─────────────────────
+# Render gives "postgres://..." but SQLAlchemy needs "postgresql://..."
+# We fix that automatically here.
 
-POSTGRES_URL = os.environ.get(
-    "POSTGRES_URL",
-    "postgresql+psycopg://postgres.vshbubcofxoekbdseiqt:Himanshu1202@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres"
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://postgres.vshbubcofxoekbdseiqt:Himanshu1202@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres"
 )
 
+# Fix "postgres://" → "postgresql://" (Render quirk)
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# ─────────────────────────────────────────────────────────────
-# CONNECTION
-# ─────────────────────────────────────────────────────────────
+# ── 2. Create engine ──────────────────────────────────────────
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,       # checks connection is alive before using it
+    pool_recycle=300,         # recycle connections every 5 minutes
+    connect_args={
+        "connect_timeout": 15,
+        "options": "-c statement_timeout=30000"
+    }
+)
 
-def get_connection():
-    """Open and return a psycopg2 connection with dict-like rows."""
-    conn = psycopg2.connect(
-        POSTGRES_URL,
-        connect_timeout=15,
-        cursor_factory=psycopg2.extras.RealDictCursor,
-    )
-    return conn
+# ── 3. Session factory ────────────────────────────────────────
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine
+)
 
-
-# ─────────────────────────────────────────────────────────────
-# INIT TABLES
-# ─────────────────────────────────────────────────────────────
-
-def init_db():
-    conn = get_connection()
-    c = conn.cursor()
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id         SERIAL PRIMARY KEY,
-            name       TEXT NOT NULL,
-            email      TEXT UNIQUE NOT NULL,
-            password   TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS sessions (
-            token      TEXT PRIMARY KEY,
-            user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS reminders (
-            id         SERIAL PRIMARY KEY,
-            user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            task       TEXT NOT NULL,
-            date       TEXT,
-            time       TEXT,
-            priority   TEXT DEFAULT 'normal',
-            completed  INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-    print("[DB] ✅ PostgreSQL tables ready")
+# ── 4. Base class for all models ──────────────────────────────
+Base = declarative_base()
 
 
-# ─────────────────────────────────────────────────────────────
-# AUTH
-# ─────────────────────────────────────────────────────────────
-
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
-
-
-def create_user(name: str, email: str, password: str):
-    conn = get_connection()
-    c = conn.cursor()
+# ── 5. Dependency for FastAPI routes ─────────────────────────
+def get_db():
+    """
+    Use this in FastAPI endpoints:
+        db: Session = Depends(get_db)
+    Opens a session, yields it, closes it after the request.
+    """
+    db = SessionLocal()
     try:
-        c.execute(
-            "INSERT INTO users (name, email, password) VALUES (%s, %s, %s) RETURNING id",
-            (name.strip(), email.strip().lower(), hash_password(password))
-        )
-        row = c.fetchone()
-        conn.commit()
-        return {"id": row["id"], "name": name, "email": email}
-    except psycopg2.errors.UniqueViolation:
-        conn.rollback()
-        return None
+        yield db
     finally:
-        conn.close()
+        db.close()
 
 
-def authenticate_user(email: str, password: str):
-    conn = get_connection()
-    c = conn.cursor()
-    c.execute(
-        "SELECT id, name, email FROM users WHERE email=%s AND password=%s",
-        (email.strip().lower(), hash_password(password))
-    )
-    row = c.fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-def create_session(user_id: int) -> str:
-    token = secrets.token_hex(32)
-    conn = get_connection()
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO sessions (token, user_id) VALUES (%s, %s)",
-        (token, user_id)
-    )
-    conn.commit()
-    conn.close()
-    return token
-
-
-def get_user_from_token(token: str):
-    if not token:
-        return None
-    conn = get_connection()
-    c = conn.cursor()
-    c.execute("""
-        SELECT u.id, u.name, u.email
-        FROM sessions s
-        JOIN users u ON s.user_id = u.id
-        WHERE s.token = %s
-    """, (token,))
-    row = c.fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-def delete_session(token: str):
-    conn = get_connection()
-    c = conn.cursor()
-    c.execute("DELETE FROM sessions WHERE token = %s", (token,))
-    conn.commit()
-    conn.close()
-
-
-# ─────────────────────────────────────────────────────────────
-# STATUS — used by /db-status endpoint
-# ─────────────────────────────────────────────────────────────
-
-def get_db_status() -> dict:
+# ── 6. Connection test ────────────────────────────────────────
+def test_connection() -> bool:
+    """Returns True if PostgreSQL is reachable."""
     try:
-        conn = get_connection()
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) AS cnt FROM users")
-        row = c.fetchone()
-        conn.close()
-        return {
-            "backend":          "postgresql",
-            "postgres_url_set": True,
-            "psycopg2_available": True,
-            "user_count":       row["cnt"],
-            "status":           "connected",
-        }
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
     except Exception as e:
-        return {
-            "backend":          "postgresql",
-            "postgres_url_set": bool(POSTGRES_URL),
-            "psycopg2_available": True,
-            "status":           "error",
-            "error":            str(e),
-        }
+        print(f"[DB] Connection test failed: {e}")
+        return False
