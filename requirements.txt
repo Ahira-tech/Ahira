@@ -18,7 +18,7 @@ packaging==26.0
 psycopg2-binary
 psycopg2
 pg8000==1.30.3
-pymongo[srv]==3.12
+pymongo[srv]==4.6.3
 pydantic==2.12.5
 pydantic_core==2.41.5
 python-multipart==0.0.22
