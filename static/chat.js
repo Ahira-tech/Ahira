@@ -848,6 +848,7 @@ function selectMood(btn, mood, emoji) {
 ───────────────────────────────────────────────────────── */
 
 window.onload = function() {
+   AhiraSplash.init(2800);   // ← add this line (2800ms = 2.8 seconds)
     document.getElementById("authLogo").style.display    = "none";
     document.getElementById("authWrapper").style.display = "none";
     document.getElementById("appWrapper").style.display  = "none";
