@@ -137,9 +137,10 @@ def me(request: Request, db: Session = Depends(get_db)):
 
 @app.get("/reminders")
 def list_reminders(request: Request, db: Session = Depends(get_db)):
-    user  = current_user(request, db)
-    uid   = user.id if user else 1
-    rows  = crud.get_reminders(db, uid)
+    user = current_user(request, db)
+    if not user:
+        return {"tasks": []}
+    rows = crud.get_reminders(db, user.id)
     tasks = [
         {"id": r.id, "task": r.task, "date": r.date,
          "time": r.time, "priority": r.priority, "completed": r.completed}
@@ -153,28 +154,27 @@ def create_reminder(body: ReminderBody, request: Request, db: Session = Depends(
     if not body.task or not body.task.strip():
         return {"status": "error", "message": "Task cannot be empty"}
     user = current_user(request, db)
-    uid  = user.id if user else 1
-    crud.add_reminder(db, uid, body.task, body.date, body.time, body.priority)
-    # Also log to MongoDB (non-blocking)
-    mongo.log_reminder(uid, body.task, body.date, body.time, body.priority)
+    if not user:
+        return JSONResponse({"status": "error", "message": "Please log in first."}, status_code=401)
+    crud.add_reminder(db, user.id, body.task, body.date, body.time, body.priority)
+    mongo.log_reminder(user.id, body.task, body.date, body.time, body.priority)
     return {"status": "success"}
-
 
 @app.delete("/reminder/{reminder_id}")
 def delete_task(reminder_id: int, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
-    uid  = user.id if user else 1
-    crud.delete_reminder(db, reminder_id, uid)
+    if not user:
+        return JSONResponse({"status": "error", "message": "Not logged in."}, status_code=401)
+    crud.delete_reminder(db, reminder_id, user.id)
     return {"status": "deleted"}
-
 
 @app.post("/reminder/{reminder_id}/toggle")
 def toggle_task(reminder_id: int, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
-    uid  = user.id if user else 1
-    crud.toggle_reminder(db, reminder_id, uid)
+    if not user:
+        return JSONResponse({"status": "error", "message": "Not logged in."}, status_code=401)
+    crud.toggle_reminder(db, reminder_id, user.id)
     return {"status": "updated"}
-
 
 # ─────────────────────────────────────────────────────────────
 # STATUS ENDPOINTS
