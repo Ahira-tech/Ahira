@@ -4,86 +4,83 @@ import hashlib
 import secrets
 
 # ─────────────────────────────────────────────────────────────
-# POSTGRES URL — set via Render environment variable
-# MUST use Supabase POOLER url (port 6543 not 5432)
-# Get it from: Supabase → Settings → Database → Connection Pooling → Transaction
-# Format: postgresql://postgres.PROJECT_REF:PASSWORD@aws-0-REGION.pooler.supabase.com:6543/postgres
+# URLS — reads from environment variables set in Render
 # ─────────────────────────────────────────────────────────────
 
-POSTGRES_URL = os.environ.get("POSTGRES_URL", "")
-SQLITE_PATH  = "data/ahira.db"
+POSTGRES_URL = os.environ.get(
+    "POSTGRES_URL",
+    "postgresql://postgres.vshbubcofxoekbdseiqt:Himanshu1202@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres"
+)
+
+SQLITE_PATH = "data/ahira.db"
 
 # ─────────────────────────────────────────────────────────────
-# DETECT BACKEND — try PostgreSQL, fall back to SQLite silently
+# TRY POSTGRESQL — fall back to SQLite if it fails
 # ─────────────────────────────────────────────────────────────
 
-_pg          = None
 USE_POSTGRES = False
+_pg = None
 
-if POSTGRES_URL:
-    try:
-        import psycopg2
-        _test = psycopg2.connect(POSTGRES_URL, connect_timeout=10)
-        _test.close()
-        _pg          = psycopg2
-        USE_POSTGRES = True
-        print("[DB] PostgreSQL connected successfully ✅")
-    except Exception as _e:
-        print(f"[DB] PostgreSQL unavailable → using SQLite. Error: {_e}")
-else:
-    print("[DB] POSTGRES_URL not set → using SQLite")
+try:
+    import psycopg2
+    conn_test = psycopg2.connect(POSTGRES_URL, connect_timeout=15)
+    conn_test.close()
+    _pg = psycopg2
+    USE_POSTGRES = True
+    print("[DB] ✅ PostgreSQL (Supabase) connected")
+except Exception as e:
+    print(f"[DB] ❌ PostgreSQL failed: {e}")
+    print("[DB] ⚠️  Falling back to SQLite")
+    USE_POSTGRES = False
 
 
 # ─────────────────────────────────────────────────────────────
-# CONNECTION HELPERS
+# HELPERS
 # ─────────────────────────────────────────────────────────────
 
 def get_connection():
     if USE_POSTGRES:
-        return _pg.connect(POSTGRES_URL, connect_timeout=10)
+        return _pg.connect(POSTGRES_URL, connect_timeout=15)
     os.makedirs("data", exist_ok=True)
-    conn = sqlite3.connect(SQLITE_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    c = sqlite3.connect(SQLITE_PATH)
+    c.row_factory = sqlite3.Row
+    return c
 
 
+# SQL placeholder — %s for postgres, ? for sqlite
 def _p():
     return "%s" if USE_POSTGRES else "?"
 
 
-def _row(cursor):
+def _row(cur):
+    """Fetch one row as plain dict."""
     if USE_POSTGRES:
-        r = cursor.fetchone()
+        r = cur.fetchone()
         if r is None:
             return None
-        return dict(zip([d[0] for d in cursor.description], r))
-    r = cursor.fetchone()
+        return dict(zip([d[0] for d in cur.description], r))
+    r = cur.fetchone()
     return dict(r) if r else None
 
 
-def _all(cursor):
+def _all(cur):
+    """Fetch all rows as list of dicts."""
     if USE_POSTGRES:
-        rows = cursor.fetchall()
+        rows = cur.fetchall()
         if not rows:
             return []
-        cols = [d[0] for d in cursor.description]
+        cols = [d[0] for d in cur.description]
         return [dict(zip(cols, r)) for r in rows]
-    return [dict(r) for r in cursor.fetchall()]
-
-
-# Public aliases used by reminders.py
-def _placeholder(_ignored): return _p()
-def _fetchrow(cursor):      return _row(cursor)
-def _fetchall(cursor):      return _all(cursor)
+    return [dict(r) for r in cur.fetchall()]
 
 
 # ─────────────────────────────────────────────────────────────
-# INIT TABLES
+# CREATE TABLES
 # ─────────────────────────────────────────────────────────────
 
 def init_db():
     conn = get_connection()
-    c    = conn.cursor()
+    c = conn.cursor()
 
     if USE_POSTGRES:
         c.execute("""
@@ -144,6 +141,7 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # safe migrations for old sqlite dbs
         for sql in [
             "ALTER TABLE reminders ADD COLUMN user_id INTEGER DEFAULT 1",
             "ALTER TABLE reminders ADD COLUMN date TEXT",
@@ -159,7 +157,7 @@ def init_db():
 
     conn.commit()
     conn.close()
-    print(f"[DB] Tables ready — {'PostgreSQL' if USE_POSTGRES else 'SQLite'}")
+    print(f"[DB] Tables ready ({'PostgreSQL' if USE_POSTGRES else 'SQLite'})")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -172,18 +170,18 @@ def hash_password(password: str) -> str:
 
 def create_user(name: str, email: str, password: str):
     conn = get_connection()
-    c    = conn.cursor()
-    ph   = _p()
+    c = conn.cursor()
+    ph = _p()
     try:
         if USE_POSTGRES:
             c.execute(
-                f"INSERT INTO users (name,email,password) VALUES ({ph},{ph},{ph}) RETURNING id",
+                f"INSERT INTO users (name, email, password) VALUES ({ph}, {ph}, {ph}) RETURNING id",
                 (name.strip(), email.strip().lower(), hash_password(password))
             )
             user_id = c.fetchone()[0]
         else:
             c.execute(
-                f"INSERT INTO users (name,email,password) VALUES ({ph},{ph},{ph})",
+                f"INSERT INTO users (name, email, password) VALUES ({ph}, {ph}, {ph})",
                 (name.strip(), email.strip().lower(), hash_password(password))
             )
             user_id = c.lastrowid
@@ -199,23 +197,26 @@ def create_user(name: str, email: str, password: str):
 
 def authenticate_user(email: str, password: str):
     conn = get_connection()
-    c    = conn.cursor()
-    ph   = _p()
+    c = conn.cursor()
+    ph = _p()
     c.execute(
-        f"SELECT id,name,email FROM users WHERE email={ph} AND password={ph}",
+        f"SELECT id, name, email FROM users WHERE email={ph} AND password={ph}",
         (email.strip().lower(), hash_password(password))
     )
-    row = _row(c)
+    result = _row(c)
     conn.close()
-    return row
+    return result
 
 
 def create_session(user_id: int) -> str:
     token = secrets.token_hex(32)
-    conn  = get_connection()
-    c     = conn.cursor()
-    ph    = _p()
-    c.execute(f"INSERT INTO sessions (token,user_id) VALUES ({ph},{ph})", (token, user_id))
+    conn = get_connection()
+    c = conn.cursor()
+    ph = _p()
+    c.execute(
+        f"INSERT INTO sessions (token, user_id) VALUES ({ph}, {ph})",
+        (token, user_id)
+    )
     conn.commit()
     conn.close()
     return token
@@ -225,29 +226,30 @@ def get_user_from_token(token: str):
     if not token:
         return None
     conn = get_connection()
-    c    = conn.cursor()
-    ph   = _p()
+    c = conn.cursor()
+    ph = _p()
     c.execute(f"""
         SELECT u.id, u.name, u.email
-        FROM sessions s JOIN users u ON s.user_id = u.id
+        FROM sessions s
+        JOIN users u ON s.user_id = u.id
         WHERE s.token = {ph}
     """, (token,))
-    row = _row(c)
+    result = _row(c)
     conn.close()
-    return row
+    return result
 
 
 def delete_session(token: str):
     conn = get_connection()
-    c    = conn.cursor()
-    ph   = _p()
-    c.execute(f"DELETE FROM sessions WHERE token={ph}", (token,))
+    c = conn.cursor()
+    ph = _p()
+    c.execute(f"DELETE FROM sessions WHERE token = {ph}", (token,))
     conn.commit()
     conn.close()
 
 
 # ─────────────────────────────────────────────────────────────
-# STATUS (used by /db-status endpoint)
+# STATUS CHECK — used by /db-status endpoint
 # ─────────────────────────────────────────────────────────────
 
 def get_db_status() -> dict:
