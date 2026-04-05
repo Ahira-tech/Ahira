@@ -1,7 +1,6 @@
 """
 main.py — Ahira
-FastAPI app using SQLAlchemy + PostgreSQL.
-All existing UI and API routes preserved exactly.
+FastAPI app using SQLAlchemy + PostgreSQL + MongoDB.
 """
 
 from fastapi import FastAPI, Request, Response, Depends
@@ -17,6 +16,7 @@ from sqlalchemy import text
 from ai.database import engine, get_db, test_connection, Base
 from ai.models   import User, UserSession, Reminder as ReminderModel
 import ai.crud   as crud
+import ai.mongo  as mongo   # ← MongoDB module
 
 # ── App setup ─────────────────────────────────────────────────
 app = FastAPI()
@@ -26,18 +26,21 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 SESSION_COOKIE = "ahira_session"
 
 
-# ── Create all tables on startup ──────────────────────────────
+# ── Startup ───────────────────────────────────────────────────
 @app.on_event("startup")
 def startup():
+    # PostgreSQL — create tables
     Base.metadata.create_all(bind=engine)
-    ok = test_connection()
-    if ok:
+    if test_connection():
         print("[Ahira] ✅ PostgreSQL connected and tables ready")
     else:
-        print("[Ahira] ❌ PostgreSQL connection failed — check DATABASE_URL")
+        print("[Ahira] ❌ PostgreSQL connection failed")
+
+    # MongoDB — try to connect (non-blocking)
+    mongo.get_client()
 
 
-# ── Helper: get current user from cookie ─────────────────────
+# ── Helper ────────────────────────────────────────────────────
 def current_user(request: Request, db: Session = None):
     token = request.cookies.get(SESSION_COOKIE)
     if not token or db is None:
@@ -45,7 +48,7 @@ def current_user(request: Request, db: Session = None):
     return crud.get_user_from_token(db, token)
 
 
-# ── Pydantic schemas ──────────────────────────────────────────
+# ── Schemas ───────────────────────────────────────────────────
 class RegisterBody(BaseModel):
     name: str
     email: str
@@ -78,7 +81,7 @@ async def db_test_page():
 
 
 # ─────────────────────────────────────────────────────────────
-# AUTH ENDPOINTS
+# AUTH
 # ─────────────────────────────────────────────────────────────
 
 @app.post("/register")
@@ -129,23 +132,17 @@ def me(request: Request, db: Session = Depends(get_db)):
 
 
 # ─────────────────────────────────────────────────────────────
-# REMINDER ENDPOINTS
+# REMINDERS
 # ─────────────────────────────────────────────────────────────
 
 @app.get("/reminders")
 def list_reminders(request: Request, db: Session = Depends(get_db)):
-    user = current_user(request, db)
-    uid  = user.id if user else 1
-    rows = crud.get_reminders(db, uid)
+    user  = current_user(request, db)
+    uid   = user.id if user else 1
+    rows  = crud.get_reminders(db, uid)
     tasks = [
-        {
-            "id":        r.id,
-            "task":      r.task,
-            "date":      r.date,
-            "time":      r.time,
-            "priority":  r.priority,
-            "completed": r.completed,
-        }
+        {"id": r.id, "task": r.task, "date": r.date,
+         "time": r.time, "priority": r.priority, "completed": r.completed}
         for r in rows
     ]
     return {"tasks": tasks}
@@ -158,6 +155,8 @@ def create_reminder(body: ReminderBody, request: Request, db: Session = Depends(
     user = current_user(request, db)
     uid  = user.id if user else 1
     crud.add_reminder(db, uid, body.task, body.date, body.time, body.priority)
+    # Also log to MongoDB (non-blocking)
+    mongo.log_reminder(uid, body.task, body.date, body.time, body.priority)
     return {"status": "success"}
 
 
@@ -178,59 +177,50 @@ def toggle_task(reminder_id: int, request: Request, db: Session = Depends(get_db
 
 
 # ─────────────────────────────────────────────────────────────
-# TEST / STATUS ENDPOINTS
+# STATUS ENDPOINTS
 # ─────────────────────────────────────────────────────────────
 
 @app.get("/db-check")
 def db_check(db: Session = Depends(get_db)):
-    """Simple connectivity test — returns PostgreSQL status."""
     try:
         db.execute(text("SELECT 1"))
         return {"status": "ok", "message": "PostgreSQL connected ✅"}
     except Exception as e:
-        return JSONResponse(
-            {"status": "error", "message": str(e)},
-            status_code=500
-        )
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 
 @app.get("/db-status")
 def db_status(db: Session = Depends(get_db)):
-    """Detailed status — used by /db-test page."""
+    # PostgreSQL check
     try:
         db.execute(text("SELECT 1"))
         user_count     = db.query(User).count()
         reminder_count = db.query(ReminderModel).count()
-        return {
-            "postgresql": {
-                "backend":            "postgresql",
-                "postgres_url_set":   True,
-                "psycopg2_available": True,
-                "status":             "connected",
-                "user_count":         user_count,
-                "reminder_count":     reminder_count,
-            },
-            "mongodb": {
-                "connected": False,
-                "error":     "MongoDB not configured yet"
-            }
+        pg_status = {
+            "backend":            "postgresql",
+            "postgres_url_set":   True,
+            "psycopg2_available": True,
+            "status":             "connected",
+            "user_count":         user_count,
+            "reminder_count":     reminder_count,
         }
     except Exception as e:
-        return {
-            "postgresql": {
-                "backend":            "postgresql",
-                "postgres_url_set":   True,
-                "psycopg2_available": True,
-                "status":             "error",
-                "error":              str(e),
-            },
-            "mongodb": {"connected": False, "error": "MongoDB not configured yet"}
+        pg_status = {
+            "backend": "postgresql",
+            "postgres_url_set":   True,
+            "psycopg2_available": True,
+            "status":  "error",
+            "error":   str(e),
         }
+
+    # MongoDB check
+    mg_status = mongo.get_status()
+
+    return {"postgresql": pg_status, "mongodb": mg_status}
 
 
 @app.get("/users")
 def list_users(db: Session = Depends(get_db)):
-    """List all users — for testing only."""
     users = crud.list_users(db)
     return {"users": [{"id": u.id, "name": u.name, "email": u.email} for u in users]}
 
