@@ -1,6 +1,7 @@
 """
 main.py — Ahira
-FastAPI app using SQLAlchemy + PostgreSQL + MongoDB.
+PostgreSQL + MongoDB. All data is user-scoped.
+Sessions expire after 30 days. Guests see empty data.
 """
 
 from fastapi import FastAPI, Request, Response, Depends
@@ -11,41 +12,54 @@ from pydantic import BaseModel
 from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from datetime import datetime, timedelta
 
-# ── Internal imports ──────────────────────────────────────────
 from ai.database import engine, get_db, test_connection, Base
 from ai.models   import User, UserSession, Reminder as ReminderModel
 import ai.crud   as crud
-import ai.mongo  as mongo   # ← MongoDB module
+import ai.mongo  as mongo
 
-# ── App setup ─────────────────────────────────────────────────
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-SESSION_COOKIE = "ahira_session"
+SESSION_COOKIE   = "ahira_session"
+SESSION_MAX_DAYS = 30
 
 
 # ── Startup ───────────────────────────────────────────────────
 @app.on_event("startup")
 def startup():
-    # PostgreSQL — create tables
     Base.metadata.create_all(bind=engine)
     if test_connection():
-        print("[Ahira] ✅ PostgreSQL connected and tables ready")
+        print("[Ahira] ✅ PostgreSQL ready")
     else:
-        print("[Ahira] ❌ PostgreSQL connection failed")
-
-    # MongoDB — try to connect (non-blocking)
+        print("[Ahira] ❌ PostgreSQL failed")
     mongo.get_client()
 
 
-# ── Helper ────────────────────────────────────────────────────
-def current_user(request: Request, db: Session = None):
+# ── Session helper ────────────────────────────────────────────
+def current_user(request: Request, db: Session):
+    """
+    Returns the User object if the session cookie is valid and not expired.
+    Returns None for guests or expired sessions.
+    """
     token = request.cookies.get(SESSION_COOKIE)
-    if not token or db is None:
+    if not token:
         return None
-    return crud.get_user_from_token(db, token)
+
+    session = db.query(UserSession).filter(UserSession.token == token).first()
+    if not session:
+        return None
+
+    # Check expiry — sessions older than 30 days are invalid
+    age = datetime.utcnow() - session.created_at
+    if age > timedelta(days=SESSION_MAX_DAYS):
+        db.delete(session)
+        db.commit()
+        return None
+
+    return session.user
 
 
 # ── Schemas ───────────────────────────────────────────────────
@@ -73,7 +87,6 @@ class ReminderBody(BaseModel):
 def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
-
 @app.get("/db-test", response_class=HTMLResponse)
 async def db_test_page():
     with open("templates/db_test.html", "r") as f:
@@ -85,7 +98,7 @@ async def db_test_page():
 # ─────────────────────────────────────────────────────────────
 
 @app.post("/register")
-def register(body: RegisterBody, response: Response, db: Session = Depends(get_db)):
+def register(body: RegisterBody, db: Session = Depends(get_db)):
     if not body.name.strip() or not body.email.strip() or not body.password:
         return JSONResponse({"status": "error", "message": "All fields are required."}, status_code=400)
     if len(body.password) < 6:
@@ -97,7 +110,8 @@ def register(body: RegisterBody, response: Response, db: Session = Depends(get_d
 
     token = crud.create_session(db, user.id)
     resp  = JSONResponse({"status": "ok", "user": {"name": user.name, "email": user.email}})
-    resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=30*24*3600)
+    resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax",
+                    max_age=SESSION_MAX_DAYS * 24 * 3600)
     return resp
 
 
@@ -109,7 +123,8 @@ def login(body: LoginBody, db: Session = Depends(get_db)):
 
     token = crud.create_session(db, user.id)
     resp  = JSONResponse({"status": "ok", "user": {"name": user.name, "email": user.email}})
-    resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=30*24*3600)
+    resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax",
+                    max_age=SESSION_MAX_DAYS * 24 * 3600)
     return resp
 
 
@@ -132,33 +147,33 @@ def me(request: Request, db: Session = Depends(get_db)):
 
 
 # ─────────────────────────────────────────────────────────────
-# REMINDERS
+# REMINDERS — all strictly user-scoped
 # ─────────────────────────────────────────────────────────────
 
 @app.get("/reminders")
 def list_reminders(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
-        return {"tasks": []}
+        return {"tasks": []}   # guests see nothing
     rows = crud.get_reminders(db, user.id)
-    tasks = [
+    return {"tasks": [
         {"id": r.id, "task": r.task, "date": r.date,
          "time": r.time, "priority": r.priority, "completed": r.completed}
         for r in rows
-    ]
-    return {"tasks": tasks}
+    ]}
 
 
 @app.post("/add_reminder")
 def create_reminder(body: ReminderBody, request: Request, db: Session = Depends(get_db)):
     if not body.task or not body.task.strip():
-        return {"status": "error", "message": "Task cannot be empty"}
+        return JSONResponse({"status": "error", "message": "Task cannot be empty"}, status_code=400)
     user = current_user(request, db)
     if not user:
-        return JSONResponse({"status": "error", "message": "Please log in first."}, status_code=401)
+        return JSONResponse({"status": "error", "message": "Please log in to save reminders."}, status_code=401)
     crud.add_reminder(db, user.id, body.task, body.date, body.time, body.priority)
     mongo.log_reminder(user.id, body.task, body.date, body.time, body.priority)
     return {"status": "success"}
+
 
 @app.delete("/reminder/{reminder_id}")
 def delete_task(reminder_id: int, request: Request, db: Session = Depends(get_db)):
@@ -168,6 +183,7 @@ def delete_task(reminder_id: int, request: Request, db: Session = Depends(get_db
     crud.delete_reminder(db, reminder_id, user.id)
     return {"status": "deleted"}
 
+
 @app.post("/reminder/{reminder_id}/toggle")
 def toggle_task(reminder_id: int, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -175,6 +191,7 @@ def toggle_task(reminder_id: int, request: Request, db: Session = Depends(get_db
         return JSONResponse({"status": "error", "message": "Not logged in."}, status_code=401)
     crud.toggle_reminder(db, reminder_id, user.id)
     return {"status": "updated"}
+
 
 # ─────────────────────────────────────────────────────────────
 # STATUS ENDPOINTS
@@ -191,32 +208,19 @@ def db_check(db: Session = Depends(get_db)):
 
 @app.get("/db-status")
 def db_status(db: Session = Depends(get_db)):
-    # PostgreSQL check
     try:
         db.execute(text("SELECT 1"))
-        user_count     = db.query(User).count()
-        reminder_count = db.query(ReminderModel).count()
-        pg_status = {
-            "backend":            "postgresql",
-            "postgres_url_set":   True,
-            "psycopg2_available": True,
-            "status":             "connected",
-            "user_count":         user_count,
-            "reminder_count":     reminder_count,
+        pg = {
+            "backend": "postgresql", "postgres_url_set": True,
+            "psycopg2_available": True, "status": "connected",
+            "user_count":     db.query(User).count(),
+            "reminder_count": db.query(ReminderModel).count(),
+            "session_count":  db.query(UserSession).count(),
         }
     except Exception as e:
-        pg_status = {
-            "backend": "postgresql",
-            "postgres_url_set":   True,
-            "psycopg2_available": True,
-            "status":  "error",
-            "error":   str(e),
-        }
+        pg = {"backend": "postgresql", "status": "error", "error": str(e)}
 
-    # MongoDB check
-    mg_status = mongo.get_status()
-
-    return {"postgresql": pg_status, "mongodb": mg_status}
+    return {"postgresql": pg, "mongodb": mongo.get_status()}
 
 
 @app.get("/users")
