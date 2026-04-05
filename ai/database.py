@@ -7,10 +7,7 @@ import secrets
 # CONFIG
 # ─────────────────────────────────────────────────────────────
 
-POSTGRES_URL = os.environ.get(
-    "POSTGRES_URL",
-    "postgresql://postgres:Himanshu@9119@db.vshbubcofxoekbdseiqt.supabase.co:5432/postgres"
-)
+POSTGRES_URL = os.environ.get("POSTGRES_URL","postgresql://postgres:Himanshu1202@db.vshbubcofxoekbdseiqt.supabase.co:5432/postgres")
 
 SQLITE_PATH = "data/ahira.db"
 
