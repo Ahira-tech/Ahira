@@ -16,7 +16,7 @@ import psycopg2.extras
 
 POSTGRES_URL = os.environ.get(
     "POSTGRES_URL",
-    "postgresql://postgres.vshbubcofxoekbdseiqt:Himanshu1202@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres"
+    "postgresql+psycopg://postgres:Himanshu1202@db.vshbubcofxoekbdseiqt.supabase.co:5432/postgres"
 )
 
 
