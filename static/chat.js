@@ -210,23 +210,32 @@ const safe = (id, fn) => { const el = document.getElementById(id); if (el) fn(el
 
 
 /* ─────────────────────────────────────────────────────────
-   5. NAVIGATION
+   5. NAVIGATION — isolated screen switching
 ───────────────────────────────────────────────────────── */
-
+ 
 function navApp(screen, btn) {
-    document.querySelectorAll(".appScreen").forEach(s => s.style.display = "none");
+    // ── Hide all screens ──────────────────────────────────
+    document.querySelectorAll(".appScreen").forEach(s => {
+        s.classList.remove("screenActive");
+        // Also reset inline display in case anything set it directly
+        s.style.display = "";
+    });
+ 
+    // ── Show target screen ────────────────────────────────
     const target = document.getElementById(screen);
-    if (target) target.style.display = "block";
-
-    // Update nav active state — works with .navItem
-    document.querySelectorAll(".navItem").forEach(b => b.classList.remove("active"));
-    if (btn) {
-        // If btn is a .navItem, mark it active; if it's something else, find the matching navItem
-        if (btn.classList && btn.classList.contains("navItem")) {
-            btn.classList.add("active");
-        }
+    if (target) {
+        target.classList.add("screenActive");
+        // Scroll to top of the new screen
+        target.scrollTop = 0;
     }
-
+ 
+    // ── Update bottom nav active state ────────────────────
+    document.querySelectorAll(".navItem").forEach(b => b.classList.remove("active"));
+    if (btn && btn.classList && btn.classList.contains("navItem")) {
+        btn.classList.add("active");
+    }
+ 
+    // ── Run screen loader ─────────────────────────────────
     const loaders = {
         homeScreen:     loadHomeData,
         plannerScreen:  loadPlanner,
@@ -235,13 +244,20 @@ function navApp(screen, btn) {
         waterScreen:    loadWaterScreen,
         groceryScreen:  loadGrocery,
         periodScreen:   calculatePeriod,
+        chatScreen:     () => {
+            // Scroll chat to bottom when switching to it
+            setTimeout(() => {
+                const chatEl = document.getElementById("chatMessages") || document.getElementById("chat");
+                if (chatEl) chatEl.scrollTop = chatEl.scrollHeight;
+            }, 50);
+        },
     };
     if (loaders[screen]) loaders[screen]();
 }
-
-// Alias for any old nav() calls
+ 
+// Alias kept for any existing nav() calls in the codebase
 const nav = navApp;
-
+ 
 
 /* ─────────────────────────────────────────────────────────
    6. HOME
