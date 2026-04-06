@@ -1753,3 +1753,142 @@ html, body {
     -webkit-tap-highlight-color: transparent;
     tap-highlight-color: transparent;
 }
+
+
+/* ============================================================
+   SCREEN ISOLATION FIX
+   Paste this at the very END of style.css (after mobile_fullscreen.css)
+   
+   ROOT CAUSE: .phoneContent is one shared scrollable div.
+   All .appScreen children stack inside it.
+   FIX: Make the content area a fixed-size container where each
+   screen fills exactly 100% and only shows one at a time.
+============================================================ */
+
+/* ── 1. PHONE CONTENT: become a position container ──────── */
+.phoneContent {
+    position: relative !important;
+    overflow: hidden !important;      /* container itself does NOT scroll */
+    padding: 0 !important;            /* screens manage own padding */
+}
+
+/* ── 2. EACH SCREEN: fill container, scroll internally ───── */
+.appScreen {
+    position: absolute !important;    /* stack all screens on top of each other */
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    overflow-y: auto !important;      /* each screen scrolls independently */
+    overflow-x: hidden !important;
+    -webkit-overflow-scrolling: touch !important;
+    overscroll-behavior: contain !important;
+    padding: 16px 18px 20px !important;
+    display: none !important;         /* hidden by default */
+    flex-direction: column !important;
+    scrollbar-width: none !important;
+    animation: none !important;       /* disable animation on hidden screens */
+}
+.appScreen::-webkit-scrollbar { display: none !important; }
+
+/* ── 3. VISIBLE SCREEN: show and animate in ──────────────── */
+.appScreen.screenActive {
+    display: block !important;
+    animation: screenSlideIn 0.22s cubic-bezier(0.4, 0, 0.2, 1) forwards !important;
+}
+
+@keyframes screenSlideIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── 4. CHAT SCREEN: special flex layout ─────────────────── */
+#chatScreen.screenActive {
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;      /* chat itself doesn't scroll */
+    padding: 0 !important;            /* chat manages own padding */
+}
+
+/* Chat box fills remaining space and scrolls */
+#chatScreen .chatBox,
+#chatScreen #chatMessages {
+    flex: 1 !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    overscroll-behavior: contain !important;
+    min-height: 0 !important;
+    padding: 14px 16px 8px !important;
+}
+
+/* Chat input stays at bottom */
+#chatScreen .chatInputWrap {
+    flex-shrink: 0 !important;
+    position: relative !important;
+    bottom: auto !important;
+}
+
+/* ── 5. WELLNESS SCREEN: normal scroll ───────────────────── */
+#wellnessScreen.screenActive {
+    display: block !important;
+    overflow-y: auto !important;
+}
+
+/* ── 6. PLANNER SCREEN: normal scroll ────────────────────── */
+#plannerScreen.screenActive {
+    display: block !important;
+    overflow-y: auto !important;
+}
+
+/* ── 7. HOME SCREEN: normal scroll ──────────────────────── */
+#homeScreen.screenActive {
+    display: block !important;
+    overflow-y: auto !important;
+}
+
+/* ── 8. SUB-SCREENS (period, water, medicine etc) ────────── */
+#periodScreen.screenActive,
+#medicineScreen.screenActive,
+#waterScreen.screenActive,
+#groceryScreen.screenActive {
+    display: block !important;
+    overflow-y: auto !important;
+}
+
+/* ── 9. AUTH SCREENS: proper isolation ───────────────────── */
+#authWrapper {
+    position: relative !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    flex: 1 !important;
+    padding: 0 20px 24px !important;
+    scrollbar-width: none !important;
+}
+#authWrapper::-webkit-scrollbar { display: none !important; }
+
+/* Auth cards don't need absolute positioning */
+.authCard {
+    position: relative !important;
+    width: 100% !important;
+}
+
+/* ── 10. MOBILE: full height screens ─────────────────────── */
+@media screen and (max-width: 480px) {
+    .phoneContent {
+        position: relative !important;
+        flex: 1 !important;
+        overflow: hidden !important;
+        padding: 0 !important;
+        min-height: 0 !important;
+    }
+
+    .appScreen {
+        padding: 14px 16px 16px !important;
+    }
+
+    #chatScreen.screenActive {
+        padding: 0 !important;
+    }
+}
