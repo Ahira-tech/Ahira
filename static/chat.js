@@ -109,15 +109,22 @@ async function submitLogin() {
 async function submitLogout() {
     closeDrawer();
     try { await fetch("/logout", { method:"POST" }); } catch(e) {}
-    currentUser = null; chatHistory = [];
+    currentUser = null;
+    chatHistory = [];
     ["water","waterTarget","waterLog","waterWeekly","medicines","groceryItems","taskMeta","lastPeriodDate"]
         .forEach(k => localStorage.removeItem(k));
+ 
     document.getElementById("appWrapper").style.display  = "none";
+    // Clear all screenActive states
+    document.querySelectorAll(".appScreen").forEach(s => {
+        s.classList.remove("screenActive");
+        s.style.display = "";
+    });
+ 
     document.getElementById("authLogo").style.display    = "block";
     document.getElementById("authWrapper").style.display = "block";
     showAuthPanel("loginScreen");
 }
-
 async function checkSession() {
     try {
         const res  = await fetch("/me");
@@ -126,23 +133,28 @@ async function checkSession() {
         else showAuth();
     } catch(e) { showAuth(); }
 }
-
+ 
 function showAuth() {
     document.getElementById("authLogo").style.display    = "block";
     document.getElementById("authWrapper").style.display = "block";
     document.getElementById("appWrapper").style.display  = "none";
+    // Make sure no appScreen is active
+    document.querySelectorAll(".appScreen").forEach(s => {
+        s.classList.remove("screenActive");
+        s.style.display = "";
+    });
     showAuthPanel("loginScreen");
 }
-
+ 
 function enterApp() {
     document.getElementById("authLogo").style.display    = "none";
     document.getElementById("authWrapper").style.display = "none";
     document.getElementById("appWrapper").style.display  = "flex";
-
+ 
     // Dynamic greeting by time of day
     const hour = new Date().getHours();
     const timeGreet = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
-
+ 
     if (currentUser) {
         const initials = currentUser.name.charAt(0).toUpperCase();
         const btn = document.getElementById("profileBtn");
@@ -153,20 +165,21 @@ function enterApp() {
         safe("drawerEmail",    el => el.innerText = currentUser.email);
         safe("drawerAvatar",   el => el.innerText = initials);
     }
-
-    // Load state
+ 
+    // Load state from localStorage
     water          = parseInt(localStorage.getItem("water"))          || 0;
     waterTarget    = parseInt(localStorage.getItem("waterTarget"))    || 8;
     waterLog       = JSON.parse(localStorage.getItem("waterLog"))     || [];
     waterWeekly    = JSON.parse(localStorage.getItem("waterWeekly"))  || {};
     medicines      = JSON.parse(localStorage.getItem("medicines"))    || [];
     groceryItems   = JSON.parse(localStorage.getItem("groceryItems")) || [];
-    lastPeriodDate = localStorage.getItem("lastPeriodDate") ? new Date(localStorage.getItem("lastPeriodDate")) : null;
-
+    lastPeriodDate = localStorage.getItem("lastPeriodDate")
+        ? new Date(localStorage.getItem("lastPeriodDate"))
+        : null;
+ 
+    // Navigate to home — uses new screenActive system
     navApp("homeScreen", document.querySelector(".navItem"));
 }
-
-
 /* ─────────────────────────────────────────────────────────
    3. PROFILE DRAWER
 ───────────────────────────────────────────────────────── */
