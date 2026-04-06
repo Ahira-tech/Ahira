@@ -1544,3 +1544,212 @@ body {
     height: 1px;
     background: rgba(196,168,255,0.2);
 }
+
+
+/* ============================================================
+   MOBILE FULL-SCREEN OVERRIDE
+   Paste this at the very END of style.css.
+   Makes the app edge-to-edge on real phones while keeping
+   the desktop phone-mockup look in browsers.
+============================================================ */
+
+@media screen and (max-width: 480px) {
+
+    /* ── Remove body centering & padding ─────────────────── */
+    body {
+        display: block !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        min-height: 100dvh !important;
+        background: var(--bg) !important;
+        overflow: hidden !important;
+    }
+
+    /* ── Phone shell becomes the full screen ─────────────── */
+    .phone {
+        width: 100vw !important;
+        height: 100dvh !important;          /* dynamic viewport height */
+        border-radius: 0 !important;        /* no rounded corners on real phone */
+        border: none !important;
+        box-shadow: none !important;
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        overflow: hidden !important;
+        display: flex !important;
+        flex-direction: column !important;
+    }
+
+    /* ── App wrapper fills remaining space ───────────────── */
+    #appWrapper {
+        flex: 1 !important;
+        display: flex !important;
+        flex-direction: column !important;
+        overflow: hidden !important;
+        min-height: 0 !important;
+        height: 100% !important;
+    }
+
+    /* ── Header: safe area for notch ────────────────────── */
+    .appHeader {
+        padding-top: max(14px, env(safe-area-inset-top)) !important;
+        padding-left: 20px !important;
+        padding-right: 20px !important;
+        padding-bottom: 12px !important;
+        position: sticky !important;
+        top: 0 !important;
+        z-index: 100 !important;
+    }
+
+    /* ── Scrollable content: full flex stretch ───────────── */
+    .phoneContent {
+        flex: 1 !important;
+        overflow-y: auto !important;
+        overflow-x: hidden !important;
+        -webkit-overflow-scrolling: touch !important;
+        overscroll-behavior: contain !important;
+        padding: 14px 16px 16px !important;
+        scroll-behavior: smooth !important;
+        min-height: 0 !important;
+    }
+
+    /* ── Bottom nav: fixed to bottom with safe area ──────── */
+    .nav {
+        flex-shrink: 0 !important;
+        position: sticky !important;
+        bottom: 0 !important;
+        left: 0 !important;
+        right: 0 !important;
+        border-radius: 0 !important;         /* no rounded bottom on real phone */
+        padding-bottom: max(18px, env(safe-area-inset-bottom)) !important;
+        padding-top: 8px !important;
+        padding-left: 12px !important;
+        padding-right: 12px !important;
+        z-index: 100 !important;
+        height: auto !important;
+    }
+
+    /* ── Auth screens: safe area aware ──────────────────── */
+    .logoContainer {
+        padding-top: max(32px, env(safe-area-inset-top)) !important;
+    }
+
+    #authWrapper {
+        padding-left: 20px !important;
+        padding-right: 20px !important;
+        padding-bottom: max(24px, env(safe-area-inset-bottom)) !important;
+    }
+
+    /* ── Cards: full width, consistent spacing ───────────── */
+    .summary-card,
+    .thoughtCard,
+    .periodHomeCard,
+    .waterHomeCard,
+    .wellnessCard,
+    .plannerCard,
+    .medCard,
+    .groceryItemCard,
+    .cardSoft {
+        border-radius: 20px !important;
+    }
+
+    /* ── Summary card: tighter on small screens ──────────── */
+    .summary-card {
+        padding: 16px !important;
+    }
+
+    .statusNum {
+        font-size: 20px !important;
+    }
+
+    /* ── Modals: safe area aware ─────────────────────────── */
+    .modalCard {
+        padding-bottom: max(100px, calc(env(safe-area-inset-bottom) + 80px)) !important;
+        border-radius: 24px 24px 0 0 !important;
+    }
+
+    /* ── Profile drawer: full height ─────────────────────── */
+    .profileDrawer {
+        border-radius: 0 !important;
+        width: 88% !important;
+    }
+
+    /* ── Reminder toast above nav ────────────────────────── */
+    .reminderToast {
+        bottom: max(80px, calc(env(safe-area-inset-bottom) + 80px)) !important;
+        left: 12px !important;
+        right: 12px !important;
+    }
+
+    /* ── Water ring: smaller on small screens ────────────── */
+    .waterRingOuter,
+    .waterRingSvg {
+        width: 120px !important;
+        height: 120px !important;
+    }
+
+    /* ── Calendar strip: smooth horizontal scroll ─────────── */
+    .calStrip {
+        padding-bottom: 8px !important;
+        -webkit-overflow-scrolling: touch !important;
+    }
+
+    /* ── Chat: proper height fill ────────────────────────── */
+    #chatScreen {
+        display: flex !important;
+        flex-direction: column !important;
+        height: 100% !important;
+        overflow: hidden !important;
+    }
+
+    .chatBox,
+    #chatMessages {
+        flex: 1 !important;
+        overflow-y: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        min-height: 0 !important;
+    }
+
+    .chatInputWrap {
+        flex-shrink: 0 !important;
+        padding-bottom: max(10px, env(safe-area-inset-bottom)) !important;
+    }
+
+    /* ── Typography scale for small screens ──────────────── */
+    .appHeaderBrand  { font-size: 18px !important; letter-spacing: 3px !important; }
+    .screenTitle     { font-size: 17px !important; }
+    .sectionTitle    { font-size: 17px !important; }
+    .statusLabel     { font-size: 9px !important; }
+
+    /* ── Splash screen full size ─────────────────────────── */
+    #ahiraSplash {
+        position: fixed !important;
+        inset: 0 !important;
+        width: 100vw !important;
+        height: 100dvh !important;
+    }
+}
+
+/* ── Very small screens (< 360px) ────────────────────────── */
+@media screen and (max-width: 360px) {
+    .phoneContent {
+        padding: 12px 14px 14px !important;
+    }
+
+    .summary-card { padding: 14px !important; }
+    .statusNum    { font-size: 18px !important; }
+    .navIcon      { font-size: 20px !important; }
+    .navLabel     { font-size: 9px !important; }
+}
+
+/* ── Prevent overscroll bounce on iOS ─────────────────────── */
+html, body {
+    overscroll-behavior: none;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* ── Smooth scrolling everywhere ─────────────────────────── */
+* {
+    -webkit-tap-highlight-color: transparent;
+    tap-highlight-color: transparent;
+}
