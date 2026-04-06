@@ -327,11 +327,27 @@ function renderHomeGroceryCard() {
 /* ─────────────────────────────────────────────────────────
    7. CHAT — OpenRouter direct from browser
 ───────────────────────────────────────────────────────── */
+/* ================================================================
+   PATCH FILE — replace sections 7 (CHAT) and 8 (PLANNER) in chat.js
+
+   INSTRUCTIONS:
+   In your chat.js file:
+   1. Find the comment: "7. CHAT — OpenRouter direct from browser"
+      Replace everything from that comment down to (but NOT including)
+      "9. WATER" with the CHAT section below.
+
+   2. Find the comment: "8. PLANNER"
+      Replace everything from that comment down to (but NOT including)
+      "9. WATER" with the PLANNER section below.
+================================================================ */
+
+
+/* ─────────────────────────────────────────────────────────
+   7. CHAT — OpenRouter direct from browser
+───────────────────────────────────────────────────────── */
 
 const OPENROUTER_KEY = "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";
-// ⚠️  Replace key above with your fresh key from openrouter.ai/keys
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-// Models tried in order — first one to respond wins
 const CHAT_MODELS = [
     "openrouter/free",
     "qwen/qwen3-4b:free",
@@ -363,56 +379,68 @@ REMINDER TAG: If user asks to set a reminder, confirm warmly, then at the very e
 }
 
 async function sendMessage() {
-    const input = document.getElementById("message");
+    const input   = document.getElementById("message");
     const message = input.value.trim();
     if (!message) return;
-    const chatEl = document.getElementById("chat");
+
+    const chatEl = document.getElementById("chatMessages");
     chatEl.querySelector(".chatSuggestions")?.remove();
+
+    // User bubble — RIGHT side
     appendUserBubble(chatEl, message);
     input.value = "";
     chatEl.scrollTop = chatEl.scrollHeight;
+
+    // Ahira typing — LEFT side
     const typingWrap = createTypingIndicator();
     chatEl.appendChild(typingWrap);
     chatEl.scrollTop = chatEl.scrollHeight;
     const botMsgEl = typingWrap.querySelector(".botMsg");
-    const messages = [{ role:"system", content:buildSystemPrompt() }, ...chatHistory, { role:"user", content:message }];
 
-    // Try each model until one works
-    let reply = null;
-    let lastErr = "";
+    const messages = [
+        { role:"system", content:buildSystemPrompt() },
+        ...chatHistory,
+        { role:"user", content:message }
+    ];
 
+    let reply = null, lastErr = "";
     for (const model of CHAT_MODELS) {
-        let res, rawText;
         try {
-            res = await fetch(OPENROUTER_URL, {
-                method:"POST",
-                headers:{ "Authorization":`Bearer ${OPENROUTER_KEY}`, "HTTP-Referer":"https://ahira.app", "X-OpenRouter-Title":"Ahira", "Content-Type":"application/json" },
+            const res = await fetch(OPENROUTER_URL, {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${OPENROUTER_KEY}`,
+                    "HTTP-Referer":  "https://ahira.app",
+                    "X-OpenRouter-Title": "Ahira",
+                    "Content-Type":  "application/json"
+                },
                 body: JSON.stringify({ model, messages, max_tokens:450, temperature:0.85 })
             });
-            rawText = await res.text();
-            if (!res.ok) { lastErr = `${model}: HTTP ${res.status} — ${rawText.slice(0,120)}`; continue; }
-            const data = JSON.parse(rawText);
+            const rawText = await res.text();
+            if (!res.ok) { lastErr = `${model}: HTTP ${res.status}`; continue; }
+            const data    = JSON.parse(rawText);
             const content = data?.choices?.[0]?.message?.content;
             if (content) { reply = content; break; }
-            lastErr = `${model}: empty content`;
+            lastErr = `${model}: empty`;
         } catch(e) {
             lastErr = `${model}: ${e.message}`;
-            if (e.message.includes("Failed to fetch") || e.message.includes("NetworkError")) break; // no point retrying if no network
+            if (e.message.includes("Failed to fetch") || e.message.includes("NetworkError")) break;
         }
     }
 
     if (!reply) {
         botMsgEl.classList.remove("typing");
-        botMsgEl.innerHTML = `<b>Connection issue 😕</b><br><span style="font-size:12px;opacity:0.8;">Could not reach Ahira right now. Check your internet and try again.</span><br><span style="font-size:10px;opacity:0.5;">${escapeHtml(lastErr.slice(0,100))}</span>`;
-        chatEl.scrollTop = chatEl.scrollHeight; return;
+        botMsgEl.innerHTML = `<b>Connection issue 😕</b><br><span style="font-size:12px;opacity:0.8;">Could not reach Ahira right now.</span>`;
+        chatEl.scrollTop = chatEl.scrollHeight;
+        return;
     }
 
     const { reply: cleanReply, reminder } = parseReminderTag(reply);
     botMsgEl.classList.remove("typing");
     renderBotText(botMsgEl, cleanReply);
-    chatHistory.push({ role:"user", content:message });
+    chatHistory.push({ role:"user",      content:message    });
     chatHistory.push({ role:"assistant", content:cleanReply });
-    if (chatHistory.length>40) chatHistory=chatHistory.slice(-40);
+    if (chatHistory.length > 40) chatHistory = chatHistory.slice(-40);
     if (reminder) { await saveReminderToBackend(reminder); showReminderToast(reminder); }
     chatEl.scrollTop = chatEl.scrollHeight;
 }
@@ -420,62 +448,118 @@ async function sendMessage() {
 function parseReminderTag(text) {
     const match = text.match(/\[REMINDER:\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(\d{2}:\d{2})\s*\]/i);
     if (!match) return { reply:text.trim(), reminder:null };
-    const today=new Date().toISOString().slice(0,10), tomorrow=new Date(Date.now()+864e5).toISOString().slice(0,10);
-    let date=match[2].trim();
-    if (/tomorrow/i.test(date)) date=tomorrow;
-    else if (!/\d{4}-\d{2}-\d{2}/.test(date)) date=today;
+    const today    = new Date().toISOString().slice(0,10);
+    const tomorrow = new Date(Date.now()+864e5).toISOString().slice(0,10);
+    let date = match[2].trim();
+    if (/tomorrow/i.test(date))          date = tomorrow;
+    else if (!/\d{4}-\d{2}-\d{2}/.test(date)) date = today;
     return { reply:text.slice(0,match.index).trim(), reminder:{task:match[1].trim(),date,time:match[3].trim()} };
 }
 
 async function saveReminderToBackend(reminder) {
-    try { await fetch("/add_reminder",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({task:reminder.task,date:reminder.date,time:reminder.time,priority:"normal"})}); } catch(e) {}
+    try {
+        await fetch("/add_reminder", {
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({task:reminder.task,date:reminder.date,time:reminder.time,priority:"normal"})
+        });
+    } catch(e) {}
 }
 
-function appendUserBubble(chatEl, message) { const w=document.createElement("div"); w.className="userMsgWrap"; w.innerHTML=`<div class="userMsg">${escapeHtml(message)}</div>`; chatEl.appendChild(w); }
-function createTypingIndicator() { const w=document.createElement("div"); w.className="botMsgWrap"; w.innerHTML=`<div class="botAvatar">A</div><div class="botMsg typing"><span class="typingDot"></span><span class="typingDot"></span><span class="typingDot"></span></div>`; return w; }
-function renderBotText(el, text) { el.innerHTML=escapeHtml(text).replace(/\n/g,"<br>"); }
-function escapeHtml(str) { return String(str).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+// ── Chat bubble builders ──────────────────────────────────
+
+function appendUserBubble(chatEl, message) {
+    const w = document.createElement("div");
+    w.className = "msgRow msgRow--user";
+    w.innerHTML = `<div class="bubble bubble--user">${escapeHtml(message)}</div>`;
+    w.style.animation = "bubbleIn 0.25s ease forwards";
+    chatEl.appendChild(w);
+}
+
+function createTypingIndicator() {
+    const w = document.createElement("div");
+    w.className = "msgRow msgRow--bot";
+    w.innerHTML = `
+        <div class="chatAvatarSmall">A</div>
+        <div class="bubble bubble--bot typing">
+            <span class="typingDot"></span>
+            <span class="typingDot"></span>
+            <span class="typingDot"></span>
+        </div>`;
+    return w;
+}
+
+function renderBotText(el, text) {
+    el.innerHTML = escapeHtml(text).replace(/\n/g, "<br>");
+}
+
+function escapeHtml(str) {
+    return String(str)
+        .replace(/&/g,"&amp;")
+        .replace(/</g,"&lt;")
+        .replace(/>/g,"&gt;")
+        .replace(/"/g,"&quot;");
+}
 
 function showReminderToast(reminder) {
     document.getElementById("reminderToast")?.remove();
-    const toast=document.createElement("div"); toast.id="reminderToast"; toast.className="reminderToast";
-    toast.innerHTML=`<span style="font-size:20px;">✅</span><div><div style="font-weight:700;font-size:13px;color:#4c1d95;">Reminder saved!</div><div style="font-size:12px;color:#6b21a8;margin-top:2px;">${escapeHtml(reminder.task)} ${reminder.date?"· "+reminder.date:""} ${reminder.time?"at "+reminder.time:""}</div></div>`;
+    const toast = document.createElement("div");
+    toast.id = "reminderToast";
+    toast.className = "reminderToast";
+    toast.innerHTML = `
+        <span style="font-size:20px;">✅</span>
+        <div>
+            <div style="font-weight:700;font-size:13px;color:#4c1d95;">Reminder saved!</div>
+            <div style="font-size:12px;color:#6b21a8;margin-top:2px;">
+                ${escapeHtml(reminder.task)}
+                ${reminder.date ? "· " + reminder.date : ""}
+                ${reminder.time ? "at " + reminder.time : ""}
+            </div>
+        </div>`;
     document.querySelector(".phone").appendChild(toast);
-    requestAnimationFrame(()=>toast.classList.add("toastVisible"));
-    setTimeout(()=>{ toast.classList.remove("toastVisible"); setTimeout(()=>toast.remove(),400); },3500);
+    requestAnimationFrame(() => toast.classList.add("toastVisible"));
+    setTimeout(() => {
+        toast.classList.remove("toastVisible");
+        setTimeout(() => toast.remove(), 400);
+    }, 3500);
 }
 
-function quickChat(msg) { document.getElementById("message").value=msg; sendMessage(); }
+function quickChat(msg) {
+    document.getElementById("message").value = msg;
+    sendMessage();
+}
 
 
 /* ─────────────────────────────────────────────────────────
    8. PLANNER
 ───────────────────────────────────────────────────────── */
 
-// Map task type keywords → emoji
 function getTaskEmoji(taskText, type) {
     const t = (taskText || "").toLowerCase();
-    if (type === "event")                           return "🎉";
-    if (t.includes("exam") || t.includes("test"))  return "📚";
-    if (t.includes("doctor") || t.includes("appointment")) return "🏥";
+    if (type === "event")                                      return "🎉";
+    if (t.includes("exam") || t.includes("test"))             return "📚";
+    if (t.includes("doctor") || t.includes("appointment"))    return "🏥";
     if (t.includes("gym") || t.includes("exercise") || t.includes("yoga")) return "🏃";
-    if (t.includes("birthday"))                     return "🎂";
-    if (t.includes("grocery") || t.includes("shop")) return "🛒";
-    if (t.includes("meeting") || t.includes("call")) return "📞";
-    if (t.includes("medicine") || t.includes("pill")) return "💊";
+    if (t.includes("birthday"))                               return "🎂";
+    if (t.includes("grocery") || t.includes("shop"))          return "🛒";
+    if (t.includes("meeting") || t.includes("call"))          return "📞";
+    if (t.includes("medicine") || t.includes("pill"))         return "💊";
     if (t.includes("travel") || t.includes("trip") || t.includes("flight")) return "✈️";
-    if (t.includes("dinner") || t.includes("lunch") || t.includes("eat")) return "🍽️";
-    if (type === "reminder")                        return "🔔";
+    if (t.includes("dinner") || t.includes("lunch") || t.includes("eat"))   return "🍽️";
+    if (type === "reminder")                                  return "🔔";
     return "📋";
 }
 
-let calendarTasks = [];   // cache of tasks for calendar
+let calendarTasks    = [];
+let selectedCalDate  = null;  // ISO date string of selected calendar day
 
 async function buildCalStrip() {
-    const strip = document.getElementById("calStrip"); if(!strip) return; strip.innerHTML="";
+    const strip = document.getElementById("calStrip");
+    if (!strip) return;
+    strip.innerHTML = "";
+
     const today = new Date();
 
-    // Load tasks if not cached
     try {
         const res  = await fetch("/reminders");
         const data = await res.json();
@@ -484,132 +568,293 @@ async function buildCalStrip() {
 
     const localMeta = JSON.parse(localStorage.getItem("taskMeta") || "{}");
 
-    for (let i = -2; i <= 6; i++) {
-        const d = new Date(today); d.setDate(today.getDate() + i);
+    // Show 14 days: 2 past + today + 11 ahead
+    for (let i = -2; i <= 11; i++) {
+        const d       = new Date(today);
+        d.setDate(today.getDate() + i);
         const dateStr = d.toISOString().slice(0, 10);
         const isToday = i === 0;
+        const isSel   = dateStr === selectedCalDate;
 
-        // Find tasks on this date
-        const dayTasks = calendarTasks.filter(t => t.date === dateStr && t.completed !== 1);
-        const meta0    = dayTasks.length > 0 ? (localMeta[`${dayTasks[0].task}__${dayTasks[0].date}`] || {}) : {};
-
-        const cell = document.createElement("div");
-        cell.className = "calCell" + (isToday ? " calToday" : "");
-        cell.onclick   = () => navApp("plannerScreen", null);
-
-        // Events area — show up to 2 emojis
+        const dayTasks    = calendarTasks.filter(t => t.date === dateStr && t.completed !== 1);
         const eventEmojis = dayTasks.slice(0, 2).map(t => {
             const meta = localMeta[`${t.task}__${t.date}`] || {};
             return getTaskEmoji(t.task, meta.type);
         });
 
+        const cell = document.createElement("div");
+        cell.className = "calCell" + (isToday ? " calToday" : "") + (isSel ? " calSelected" : "");
+        cell.dataset.date = dateStr;
+        cell.onclick = () => selectCalDay(dateStr);
+
         cell.innerHTML = `
             <div class="calDay">${d.toLocaleDateString("en-IN",{weekday:"short"}).slice(0,3)}</div>
             <div class="calNum">${d.getDate()}</div>
-            <div class="calEvents">${eventEmojis.map(e => `<span class="calEventDot">${e}</span>`).join("")}
-            ${dayTasks.length > 2 ? `<span class="calEventDot" style="font-size:8px;opacity:0.6;">+${dayTasks.length-2}</span>` : ""}
+            <div class="calEvents">
+                ${eventEmojis.map(e => `<span class="calEventDot">${e}</span>`).join("")}
+                ${dayTasks.length > 2 ? `<span class="calMore">+${dayTasks.length-2}</span>` : ""}
             </div>`;
         strip.appendChild(cell);
     }
 
-    safe("plannerDateLabel", el => el.innerText = today.toLocaleDateString("en-IN",{weekday:"long",month:"long",day:"numeric"}));
+    safe("plannerDateLabel", el => el.innerText =
+        today.toLocaleDateString("en-IN", {weekday:"long", month:"long", day:"numeric"}));
+}
+
+function selectCalDay(dateStr) {
+    selectedCalDate = dateStr;
+    // Update selected style
+    document.querySelectorAll(".calCell").forEach(c => {
+        c.classList.toggle("calSelected", c.dataset.date === dateStr);
+    });
+    // Show tasks for that day
+    renderDayDetail(dateStr);
+}
+
+function renderDayDetail(dateStr) {
+    const panel = document.getElementById("dayDetailPanel");
+    if (!panel) return;
+
+    const localMeta = JSON.parse(localStorage.getItem("taskMeta") || "{}");
+    const tasks     = calendarTasks.filter(t => t.date === dateStr);
+    const d         = new Date(dateStr + "T00:00:00");
+    const label     = d.toLocaleDateString("en-IN", {weekday:"long", day:"numeric", month:"long"});
+
+    if (tasks.length === 0) {
+        panel.innerHTML = `
+            <div class="dayDetailHeader">${label}</div>
+            <div class="dayDetailEmpty">No tasks this day 🌸<br>
+                <button class="addPillBtn" style="margin-top:10px;font-size:12px;padding:7px 16px;"
+                    onclick="openAddTaskForDate('${dateStr}')">+ Add Task</button>
+            </div>`;
+    } else {
+        panel.innerHTML = `<div class="dayDetailHeader">${label}</div>` +
+            tasks.map(t => {
+                const meta = localMeta[`${t.task}__${t.date}`] || {};
+                const emoji = getTaskEmoji(t.task, meta.type);
+                const done  = t.completed === 1;
+                return `<div class="dayDetailTask ${done ? "dayDetailDone" : ""}">
+                    <span class="dayDetailEmoji">${emoji}</span>
+                    <div class="dayDetailInfo">
+                        <div class="dayDetailName">${escapeHtml(t.task)}</div>
+                        ${t.time ? `<div class="dayDetailTime">⏰ ${t.time}</div>` : ""}
+                    </div>
+                    <div style="display:flex;gap:4px;margin-left:auto;">
+                        <button class="iconBtn ${done?"btnDone":"btnPrimary"}" onclick="toggleTask(${t.id})">✔</button>
+                        <button class="iconBtn btnDanger" onclick="deleteTask(${t.id})">🗑</button>
+                    </div>
+                </div>`;
+            }).join("") +
+            `<button class="addPillBtn" style="width:100%;margin-top:10px;font-size:12px;padding:7px;"
+                onclick="openAddTaskForDate('${dateStr}')">+ Add for this day</button>`;
+    }
+    panel.style.display = "block";
+}
+
+function openAddTaskForDate(dateStr) {
+    openAddTask();
+    setTimeout(() => {
+        const dateInput = document.getElementById("dateInput");
+        if (dateInput) dateInput.value = dateStr;
+    }, 50);
 }
 
 function initChips(containerId, stateKey) {
-    const container=document.getElementById(containerId); if(!container) return;
-    container.querySelectorAll(".typeChip").forEach(chip=>{
-        chip.addEventListener("click",()=>{
-            container.querySelectorAll(".typeChip").forEach(c=>c.classList.remove("active")); chip.classList.add("active");
-            if(stateKey==="task") selectedTaskType=chip.dataset.val;
-            if(stateKey==="priority") selectedTaskPriority=chip.dataset.val;
-            if(stateKey==="medpri") selectedMedPriority=chip.dataset.val;
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.querySelectorAll(".typeChip").forEach(chip => {
+        chip.addEventListener("click", () => {
+            container.querySelectorAll(".typeChip").forEach(c => c.classList.remove("active"));
+            chip.classList.add("active");
+            if (stateKey === "task")     selectedTaskType     = chip.dataset.val;
+            if (stateKey === "priority") selectedTaskPriority = chip.dataset.val;
+            if (stateKey === "medpri")   selectedMedPriority  = chip.dataset.val;
         });
     });
 }
 
 function openAddTask() {
-    document.getElementById("addTaskModal").style.display="flex";
-    selectedTaskType="task"; selectedTaskPriority="normal";
-    document.querySelectorAll("#taskTypeChips .typeChip").forEach((c,i)=>c.classList.toggle("active",i===0));
-    document.querySelectorAll("#taskPriorityChips .typeChip").forEach((c,i)=>c.classList.toggle("active",i===0));
+    document.getElementById("addTaskModal").style.display = "flex";
+    selectedTaskType = "task"; selectedTaskPriority = "normal";
+    document.querySelectorAll("#taskTypeChips .typeChip").forEach((c,i) => c.classList.toggle("active", i===0));
+    document.querySelectorAll("#taskPriorityChips .typeChip").forEach((c,i) => c.classList.toggle("active", i===0));
 }
 
-function closeAddTask(e) { if(!e||e.target.classList.contains("modalOverlay")) document.getElementById("addTaskModal").style.display="none"; }
+function closeAddTask(e) {
+    if (!e || e.target.classList.contains("modalOverlay"))
+        document.getElementById("addTaskModal").style.display = "none";
+}
 
 async function saveTask() {
-    const task=document.getElementById("taskInput").value.trim(), date=document.getElementById("dateInput").value, time=document.getElementById("timeInput").value, pinned=document.getElementById("pinTask").checked;
-    if(!task){alert("Please enter a task name.");return;}
-    const localMeta=JSON.parse(localStorage.getItem("taskMeta")||"{}");
+    const task   = document.getElementById("taskInput").value.trim();
+    const date   = document.getElementById("dateInput").value;
+    const time   = document.getElementById("timeInput").value;
+    const pinned = document.getElementById("pinTask").checked;
+    if (!task) { alert("Please enter a task name."); return; }
+
+    const localMeta = JSON.parse(localStorage.getItem("taskMeta") || "{}");
     try {
-        const res=await fetch("/add_reminder",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({task,date,time,priority:selectedTaskPriority})});
-        const data=await res.json();
-        if(data.status==="success"){
-            localMeta[`${task}__${date}`]={type:selectedTaskType,pinned};
-            localStorage.setItem("taskMeta",JSON.stringify(localMeta));
-            document.getElementById("taskInput").value=""; document.getElementById("dateInput").value=""; document.getElementById("timeInput").value=""; document.getElementById("pinTask").checked=false;
-            closeAddTask(); loadPlanner();
+        const res  = await fetch("/add_reminder", {
+            method: "POST",
+            headers: {"Content-Type":"application/json"},
+            body: JSON.stringify({task, date, time, priority:selectedTaskPriority})
+        });
+        const data = await res.json();
+        if (data.status === "success") {
+            localMeta[`${task}__${date}`] = {type:selectedTaskType, pinned};
+            localStorage.setItem("taskMeta", JSON.stringify(localMeta));
+            document.getElementById("taskInput").value  = "";
+            document.getElementById("dateInput").value  = "";
+            document.getElementById("timeInput").value  = "";
+            document.getElementById("pinTask").checked  = false;
+            closeAddTask();
+            await loadPlanner();
+            // Re-select the date if we added from day detail
+            if (date && selectedCalDate === date) renderDayDetail(date);
+        } else {
+            alert(data.message || "Could not save. Please log in.");
         }
-    } catch(e){alert("Network error.");}
+    } catch(e) { alert("Network error."); }
 }
 
 async function loadPlanner() {
-    await buildCalStrip(); initChips("taskTypeChips","task"); initChips("taskPriorityChips","priority");
-    const todayList=document.getElementById("todayTaskList"), upcomingList=document.getElementById("upcomingTaskList"), completedList=document.getElementById("completedTaskList"), pinnedList=document.getElementById("pinnedList"), pinnedSection=document.getElementById("pinnedSection");
-    if(!todayList) return;
-    todayList.innerHTML=upcomingList.innerHTML=completedList.innerHTML=""; if(pinnedList) pinnedList.innerHTML="";
+    await buildCalStrip();
+    initChips("taskTypeChips",    "task");
+    initChips("taskPriorityChips","priority");
+
+    const todayList     = document.getElementById("todayTaskList");
+    const upcomingList  = document.getElementById("upcomingTaskList");
+    const completedList = document.getElementById("completedTaskList");
+    const pinnedList    = document.getElementById("pinnedList");
+    const pinnedSection = document.getElementById("pinnedSection");
+    if (!todayList) return;
+
+    todayList.innerHTML = upcomingList.innerHTML = completedList.innerHTML = "";
+    if (pinnedList) pinnedList.innerHTML = "";
+
+    // Hide day detail panel until a day is tapped
+    const panel = document.getElementById("dayDetailPanel");
+    if (panel) panel.style.display = "none";
+    selectedCalDate = null;
+
     try {
-        const res=await fetch("/reminders"), data=await res.json();
-        const localMeta=JSON.parse(localStorage.getItem("taskMeta")||"{}");
-        const now=new Date(); now.setHours(0,0,0,0);
-        let hasPinned=false;
-        data.tasks.forEach(task=>{
-            const meta=localMeta[`${task.task}__${task.date}`]||{}, card=buildPlannerCard(task,meta);
-            if(meta.pinned&&!task.completed){pinnedList.innerHTML+=card;hasPinned=true;}
-            if(task.completed){completedList.innerHTML+=card;return;}
-            if(!task.date){upcomingList.innerHTML+=card;return;}
-            const d=new Date(task.date);d.setHours(0,0,0,0);
-            if(d.getTime()===now.getTime()||d<now) todayList.innerHTML+=card; else upcomingList.innerHTML+=card;
+        const res  = await fetch("/reminders");
+        const data = await res.json();
+        const localMeta = JSON.parse(localStorage.getItem("taskMeta") || "{}");
+        const now   = new Date(); now.setHours(0,0,0,0);
+        let hasPinned = false;
+
+        // Sort: overdue first, then today, then upcoming
+        const tasks = data.tasks || [];
+
+        tasks.forEach(task => {
+            const meta = localMeta[`${task.task}__${task.date}`] || {};
+            const card = buildPlannerCard(task, meta);
+
+            if (meta.pinned && !task.completed) {
+                pinnedList.innerHTML += card;
+                hasPinned = true;
+            }
+
+            if (task.completed) {
+                completedList.innerHTML += card;
+                return;
+            }
+
+            if (!task.date) {
+                upcomingList.innerHTML += card;
+                return;
+            }
+
+            const d = new Date(task.date); d.setHours(0,0,0,0);
+            if (d <= now) {
+                todayList.innerHTML += card;
+            } else {
+                upcomingList.innerHTML += card;
+            }
         });
-        if(!todayList.innerHTML) todayList.innerHTML=emptyMsg("No tasks for today 🌸");
-        if(!upcomingList.innerHTML) upcomingList.innerHTML=emptyMsg("Nothing upcoming yet");
-        if(pinnedSection) pinnedSection.style.display=hasPinned?"block":"none";
-        updateSummaryCounts(data.tasks);
-    } catch(e){console.error("[Planner]",e);}
+
+        if (!todayList.innerHTML)
+            todayList.innerHTML    = emptyMsg("All clear for today 🌸");
+        if (!upcomingList.innerHTML)
+            upcomingList.innerHTML = emptyMsg("Nothing scheduled ahead");
+        if (pinnedSection)
+            pinnedSection.style.display = hasPinned ? "block" : "none";
+
+        updateSummaryCounts(tasks);
+
+    } catch(e) { console.error("[Planner]", e); }
 }
 
-function buildPlannerCard(task,meta) {
-    const done=task.completed===1, typeIcon={task:"📋",event:"🎉",reminder:"🔔"}[meta.type||"task"];
-    const hiPri = task.priority==="high";
-    // Colour-coded status dot
-    let dot = "";
+function buildPlannerCard(task, meta) {
+    const done     = task.completed === 1;
+    const typeIcon = {task:"📋", event:"🎉", reminder:"🔔"}[meta.type || "task"];
+    const hiPri    = task.priority === "high";
+
+    // Status dot colour
+    let dotColor = "";
     if (!done && task.date) {
-        const t=new Date();t.setHours(0,0,0,0);
-        const d=new Date(task.date);d.setHours(0,0,0,0);
-        if (d<t)                      dot=`<span style="width:8px;height:8px;border-radius:50%;background:#F87171;flex-shrink:0;display:inline-block;margin-right:6px;"></span>`;
-        else if(d.getTime()===t.getTime()) dot=`<span style="width:8px;height:8px;border-radius:50%;background:#FBBF24;flex-shrink:0;display:inline-block;margin-right:6px;"></span>`;
-        else                          dot=`<span style="width:8px;height:8px;border-radius:50%;background:#CBD5E1;flex-shrink:0;display:inline-block;margin-right:6px;"></span>`;
+        const today = new Date(); today.setHours(0,0,0,0);
+        const d     = new Date(task.date); d.setHours(0,0,0,0);
+        dotColor = d < today ? "#F87171" : d.getTime() === today.getTime() ? "#FBBF24" : "#A5B4FC";
     }
-    return `<div class="plannerCard ${done?"taskDone":""}" style="${hiPri?"border-left:3px solid #F87171;":""}">
+
+    const dot = dotColor
+        ? `<span style="width:7px;height:7px;border-radius:50%;background:${dotColor};flex-shrink:0;"></span>`
+        : "";
+
+    // Format date nicely
+    let dateLabel = "";
+    if (task.date) {
+        const d = new Date(task.date + "T00:00:00");
+        dateLabel = d.toLocaleDateString("en-IN", {day:"numeric", month:"short"});
+    }
+
+    return `
+    <div class="plannerCard ${done ? "taskDone" : ""}" style="${hiPri ? "border-left:3px solid #F87171;" : ""}">
         <div class="plannerCardLeft">
             <div class="plannerTypeIcon">${typeIcon}</div>
             <div style="flex:1;min-width:0;">
-                <div class="taskText" style="display:flex;align-items:center;">${dot}${task.task}${hiPri?` <span style="color:#F87171;font-size:11px;margin-left:4px;">🔥</span>`:""}</div>
-                <div class="taskMeta">${task.date?"📅 "+task.date:""} ${task.time?"⏰ "+task.time:""}</div>
+                <div class="taskText" style="display:flex;align-items:center;gap:6px;">
+                    ${dot}
+                    <span style="${done ? "text-decoration:line-through;opacity:0.55;" : ""}">${escapeHtml(task.task)}</span>
+                    ${hiPri ? `<span style="color:#F87171;font-size:10px;">🔥 High</span>` : ""}
+                </div>
+                <div class="taskMeta">
+                    ${dateLabel ? `📅 ${dateLabel}` : ""}
+                    ${task.time ? `⏰ ${task.time}` : ""}
+                    ${!dateLabel && !task.time ? "No date set" : ""}
+                </div>
             </div>
         </div>
-        <div style="display:flex;gap:5px;">
-            <button class="iconBtn ${done?"btnDone":"btnPrimary"}" onclick="toggleTask(${task.id})">✔</button>
+        <div style="display:flex;gap:5px;flex-shrink:0;">
+            <button class="iconBtn ${done ? "btnDone" : "btnPrimary"}" onclick="toggleTask(${task.id})">✔</button>
             <button class="iconBtn btnDanger" onclick="deleteTask(${task.id})">🗑</button>
         </div>
     </div>`;
 }
 
-function emptyMsg(txt) { return `<p style="color:var(--t3);font-size:13px;padding:14px 0;text-align:center;">${txt}</p>`; }
-function toggleCompleted() { completedVisible=!completedVisible; const l=document.getElementById("completedTaskList"),a=document.getElementById("completedToggleArrow"); if(l) l.style.display=completedVisible?"block":"none"; if(a) a.innerText=completedVisible?"∨":"›"; }
-async function deleteTask(id) { await fetch("/reminder/"+id,{method:"DELETE"}); loadPlanner(); }
-async function toggleTask(id) { await fetch("/reminder/"+id+"/toggle",{method:"POST"}); loadPlanner(); }
+function emptyMsg(txt) {
+    return `<p style="color:var(--t3);font-size:13px;padding:16px 0;text-align:center;">${txt}</p>`;
+}
 
+function toggleCompleted() {
+    completedVisible = !completedVisible;
+    const l = document.getElementById("completedTaskList");
+    const a = document.getElementById("completedToggleArrow");
+    if (l) l.style.display = completedVisible ? "block" : "none";
+    if (a) a.innerText = completedVisible ? "∨" : "›";
+}
 
+async function deleteTask(id) {
+    await fetch("/reminder/" + id, {method:"DELETE"});
+    loadPlanner();
+}
+
+async function toggleTask(id) {
+    await fetch("/reminder/" + id + "/toggle", {method:"POST"});
+    loadPlanner();
+}
 /* ─────────────────────────────────────────────────────────
    9. WATER
 ───────────────────────────────────────────────────────── */
