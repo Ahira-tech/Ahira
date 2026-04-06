@@ -1314,3 +1314,233 @@ body {
     0%, 100% { opacity: 1; }
     50%       { opacity: 0.65; }
 }
+
+/* ================================================================
+   STYLE ADDITIONS — paste at the very END of style.css
+   These fix: chat bubble layout (bot=left, user=right) and
+   planner day-detail panel + calendar selected state.
+================================================================ */
+
+
+/* ── CHAT: message rows ──────────────────────────────────── */
+
+/* Remove old conflicting bubble styles by overriding */
+.userMsgWrap, .botMsgWrap { display: none !important; } /* hide old wrappers if still in DOM */
+
+.msgRow {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    margin-bottom: 10px;
+    animation: bubbleIn 0.22s ease forwards;
+}
+
+@keyframes bubbleIn {
+    from { opacity: 0; transform: translateY(8px) scale(0.97); }
+    to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+
+/* BOT row — avatar on LEFT, bubble on left */
+.msgRow--bot {
+    flex-direction: row;
+    justify-content: flex-start;
+}
+
+/* USER row — no avatar, bubble on RIGHT */
+.msgRow--user {
+    flex-direction: row-reverse;
+}
+
+/* Shared bubble base */
+.bubble {
+    max-width: 76%;
+    padding: 11px 15px;
+    font-size: 14px;
+    line-height: 1.55;
+    word-break: break-word;
+}
+
+/* BOT bubble — white, left-rounded */
+.bubble--bot {
+    background: rgba(255,255,255,0.96);
+    border: 1px solid rgba(196,168,255,0.22);
+    border-radius: 18px 18px 18px 4px;
+    color: var(--t1);
+    box-shadow: 0 2px 10px rgba(108,63,206,0.08);
+}
+
+/* USER bubble — purple gradient, right-rounded */
+.bubble--user {
+    background: var(--grad-main);
+    border-radius: 18px 18px 4px 18px;
+    color: white;
+    box-shadow: 0 4px 14px rgba(108,63,206,0.30);
+}
+
+/* Small avatar for bot messages */
+.chatAvatarSmall {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: var(--grad-main);
+    color: white;
+    font-size: 13px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Poppins', sans-serif;
+    flex-shrink: 0;
+    align-self: flex-end;
+}
+
+/* Typing dots inside bot bubble */
+.bubble.typing {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 14px 16px;
+    min-width: 60px;
+}
+
+/* Chat suggestions — shown below first bot message */
+.chatSuggestions {
+    display: flex;
+    gap: 7px;
+    flex-wrap: wrap;
+    margin: 4px 0 8px 38px; /* indent to align with bot bubble */
+    justify-content: flex-start;
+}
+
+/* Chat messages container — give it an id="chatMessages" */
+#chatMessages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px 16px 8px;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    scroll-behavior: smooth;
+    display: flex;
+    flex-direction: column;
+}
+#chatMessages::-webkit-scrollbar { display: none; }
+
+/* Date divider */
+.chatDateDivider {
+    text-align: center;
+    font-size: 11px;
+    color: var(--t4);
+    background: rgba(196,168,255,0.14);
+    border-radius: 20px;
+    padding: 3px 14px;
+    width: fit-content;
+    margin: 0 auto 14px;
+    align-self: center;
+}
+
+
+/* ── PLANNER: calendar selected state ───────────────────── */
+
+.calSelected {
+    background: rgba(108,63,206,0.15) !important;
+    border-color: var(--p1) !important;
+    box-shadow: 0 0 0 2px rgba(108,63,206,0.3) !important;
+}
+.calSelected .calDay,
+.calSelected .calNum { color: var(--p1) !important; }
+
+.calMore {
+    font-size: 8px;
+    color: var(--t4);
+    opacity: 0.7;
+}
+
+
+/* ── PLANNER: day detail panel ──────────────────────────── */
+
+#dayDetailPanel {
+    background: var(--glass);
+    border: 1px solid var(--glass-b);
+    border-radius: var(--r-xl);
+    padding: 14px 16px;
+    margin-top: 8px;
+    margin-bottom: 4px;
+    box-shadow: var(--s2);
+    animation: fadeIn 0.22s ease;
+    display: none;
+}
+
+.dayDetailHeader {
+    font-family: 'Poppins', sans-serif;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--p1);
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid rgba(196,168,255,0.2);
+}
+
+.dayDetailEmpty {
+    text-align: center;
+    font-size: 13px;
+    color: var(--t3);
+    padding: 10px 0 4px;
+    line-height: 1.8;
+}
+
+.dayDetailTask {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 0;
+    border-bottom: 1px solid rgba(196,168,255,0.1);
+}
+.dayDetailTask:last-of-type { border-bottom: none; }
+
+.dayDetailDone { opacity: 0.45; }
+
+.dayDetailEmoji {
+    font-size: 20px;
+    flex-shrink: 0;
+}
+
+.dayDetailInfo { flex: 1; min-width: 0; }
+
+.dayDetailName {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--t1);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.dayDetailTime {
+    font-size: 11px;
+    color: var(--t3);
+    margin-top: 2px;
+}
+
+
+/* ── PLANNER: section labels improved ───────────────────── */
+
+.plannerSectionLabel {
+    font-family: 'Poppins', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--t4);
+    margin-top: 16px;
+    margin-bottom: 4px;
+    padding: 0 2px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.plannerSectionLabel::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: rgba(196,168,255,0.2);
+}
