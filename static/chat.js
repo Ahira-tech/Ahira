@@ -106,25 +106,29 @@ async function submitLogin() {
     } finally { btn.disabled = false; btn.innerText = "Sign In"; }
 }
 
+
 async function submitLogout() {
     closeDrawer();
-    try { await fetch("/logout", { method:"POST" }); } catch(e) {}
+    try { await fetch("/logout", { method: "POST" }); } catch(e) {}
+ 
     currentUser = null;
     chatHistory = [];
-    ["water","waterTarget","waterLog","waterWeekly","medicines","groceryItems","taskMeta","lastPeriodDate"]
+ 
+    // Clear localStorage
+    ["water","waterTarget","waterLog","waterWeekly",
+     "medicines","groceryItems","taskMeta","lastPeriodDate"]
         .forEach(k => localStorage.removeItem(k));
  
-    document.getElementById("appWrapper").style.display  = "none";
-    // Clear all screenActive states
-    document.querySelectorAll(".appScreen").forEach(s => {
-        s.classList.remove("screenActive");
-        s.style.display = "";
-    });
+    // Clear all active screens
+    document.querySelectorAll(".appScreen").forEach(s => s.classList.remove("active"));
  
+    // Show auth
+    document.getElementById("appWrapper").style.display  = "none";
     document.getElementById("authLogo").style.display    = "block";
     document.getElementById("authWrapper").style.display = "block";
     showAuthPanel("loginScreen");
 }
+
 async function checkSession() {
     try {
         const res  = await fetch("/me");
@@ -134,24 +138,28 @@ async function checkSession() {
     } catch(e) { showAuth(); }
 }
  
+ 
 function showAuth() {
+    // Clear all active screens first
+    document.querySelectorAll(".appScreen").forEach(s => s.classList.remove("active"));
+ 
     document.getElementById("authLogo").style.display    = "block";
     document.getElementById("authWrapper").style.display = "block";
     document.getElementById("appWrapper").style.display  = "none";
-    // Make sure no appScreen is active
-    document.querySelectorAll(".appScreen").forEach(s => {
-        s.classList.remove("screenActive");
-        s.style.display = "";
-    });
     showAuthPanel("loginScreen");
 }
- 
+  
+
 function enterApp() {
+    // Show app, hide auth
     document.getElementById("authLogo").style.display    = "none";
     document.getElementById("authWrapper").style.display = "none";
     document.getElementById("appWrapper").style.display  = "flex";
  
-    // Dynamic greeting by time of day
+    // Make sure all screens are hidden before showing home
+    document.querySelectorAll(".appScreen").forEach(s => s.classList.remove("active"));
+ 
+    // Time-based greeting
     const hour = new Date().getHours();
     const timeGreet = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
  
@@ -166,7 +174,7 @@ function enterApp() {
         safe("drawerAvatar",   el => el.innerText = initials);
     }
  
-    // Load state from localStorage
+    // Restore state from localStorage
     water          = parseInt(localStorage.getItem("water"))          || 0;
     waterTarget    = parseInt(localStorage.getItem("waterTarget"))    || 8;
     waterLog       = JSON.parse(localStorage.getItem("waterLog"))     || [];
@@ -177,9 +185,10 @@ function enterApp() {
         ? new Date(localStorage.getItem("lastPeriodDate"))
         : null;
  
-    // Navigate to home — uses new screenActive system
+    // Navigate to home screen
     navApp("homeScreen", document.querySelector(".navItem"));
 }
+ 
 /* ─────────────────────────────────────────────────────────
    3. PROFILE DRAWER
 ───────────────────────────────────────────────────────── */
@@ -227,28 +236,34 @@ const safe = (id, fn) => { const el = document.getElementById(id); if (el) fn(el
 ───────────────────────────────────────────────────────── */
  
 function navApp(screen, btn) {
-    // ── Hide all screens ──────────────────────────────────
+    // Hide every screen — remove active class
     document.querySelectorAll(".appScreen").forEach(s => {
-        s.classList.remove("screenActive");
-        // Also reset inline display in case anything set it directly
-        s.style.display = "";
+        s.classList.remove("active");
     });
  
-    // ── Show target screen ────────────────────────────────
+    // Show the requested screen
     const target = document.getElementById(screen);
     if (target) {
-        target.classList.add("screenActive");
-        // Scroll to top of the new screen
-        target.scrollTop = 0;
+        target.classList.add("active");
+        // Scroll to top when entering a screen
+        // (except chat — it scrolls to bottom)
+        if (screen === "chatScreen") {
+            setTimeout(() => {
+                const box = document.getElementById("chatMessages") || document.getElementById("chat");
+                if (box) box.scrollTop = box.scrollHeight;
+            }, 60);
+        } else {
+            target.scrollTop = 0;
+        }
     }
  
-    // ── Update bottom nav active state ────────────────────
+    // Update bottom nav highlight
     document.querySelectorAll(".navItem").forEach(b => b.classList.remove("active"));
     if (btn && btn.classList && btn.classList.contains("navItem")) {
         btn.classList.add("active");
     }
  
-    // ── Run screen loader ─────────────────────────────────
+    // Run the loader for this screen
     const loaders = {
         homeScreen:     loadHomeData,
         plannerScreen:  loadPlanner,
@@ -257,18 +272,10 @@ function navApp(screen, btn) {
         waterScreen:    loadWaterScreen,
         groceryScreen:  loadGrocery,
         periodScreen:   calculatePeriod,
-        chatScreen:     () => {
-            // Scroll chat to bottom when switching to it
-            setTimeout(() => {
-                const chatEl = document.getElementById("chatMessages") || document.getElementById("chat");
-                if (chatEl) chatEl.scrollTop = chatEl.scrollHeight;
-            }, 50);
-        },
     };
     if (loaders[screen]) loaders[screen]();
 }
  
-// Alias kept for any existing nav() calls in the codebase
 const nav = navApp;
  
 
@@ -1121,10 +1128,22 @@ function selectMood(btn, mood, emoji) {
    15. INIT
 ───────────────────────────────────────────────────────── */
 
+
 window.onload = function() {
-   AhiraSplash.init(2800);   // ← add this line (2800ms = 2.8 seconds)
+    // Start with everything hidden
     document.getElementById("authLogo").style.display    = "none";
     document.getElementById("authWrapper").style.display = "none";
     document.getElementById("appWrapper").style.display  = "none";
+ 
+    // Ensure no screen is active on load
+    document.querySelectorAll(".appScreen").forEach(s => s.classList.remove("active"));
+ 
+    // Start splash if available
+    if (typeof AhiraSplash !== "undefined") {
+        AhiraSplash.init(2600);
+    }
+ 
+    // Check if user is already logged in
     checkSession();
 };
+ 
