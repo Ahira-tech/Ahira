@@ -1892,3 +1892,174 @@ html, body {
         padding: 0 !important;
     }
 }
+
+/* ============================================================
+   AHIRA — FINAL NAVIGATION ARCHITECTURE FIX
+   
+   INSTRUCTIONS: Paste this at the very END of style.css.
+   This completely overrides the broken screen stacking.
+   DO NOT add any other nav/screen CSS after this.
+============================================================ */
+
+/* ══════════════════════════════════════════════════════════
+   CORE ARCHITECTURE:
+   .phoneContent  = fixed-size viewport container (no scroll)
+   .appScreen     = absolute positioned layers (all same size)
+   Only one .appScreen has class "active" at a time
+   Each active screen manages its OWN internal scroll
+══════════════════════════════════════════════════════════ */
+
+/* ── STEP 1: Kill the shared scroll container ────────────── */
+.phoneContent {
+    position: relative  !important;
+    overflow: hidden    !important;   /* MUST NOT scroll */
+    padding: 0          !important;   /* screens own their padding */
+    flex: 1             !important;
+    min-height: 0       !important;
+}
+
+/* ── STEP 2: All screens stacked, all hidden ─────────────── */
+.appScreen {
+    /* Geometry — fill the container exactly */
+    position: absolute  !important;
+    top:    0           !important;
+    left:   0           !important;
+    right:  0           !important;
+    bottom: 0           !important;
+    width:  100%        !important;
+    height: 100%        !important;
+
+    /* Hidden by default */
+    display:    none    !important;
+    visibility: hidden  !important;
+    pointer-events: none !important;
+    z-index: 0          !important;
+
+    /* Each screen scrolls itself */
+    overflow-y: auto    !important;
+    overflow-x: hidden  !important;
+    -webkit-overflow-scrolling: touch !important;
+    overscroll-behavior: contain      !important;
+    scrollbar-width: none             !important;
+
+    /* Comfortable padding inside each screen */
+    padding: 16px 16px 24px !important;
+    box-sizing: border-box  !important;
+}
+.appScreen::-webkit-scrollbar { display: none !important; }
+
+/* ── STEP 3: Active screen — visible and interactive ─────── */
+.appScreen.active {
+    display:        block       !important;
+    visibility:     visible     !important;
+    pointer-events: auto        !important;
+    z-index:        10          !important;
+    animation: screenEnter 0.2s cubic-bezier(0.4, 0, 0.2, 1) forwards !important;
+}
+
+@keyframes screenEnter {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0);   }
+}
+
+/* ── STEP 4: CHAT — special flex layout (doesn't scroll) ─── */
+#chatScreen.active {
+    display:        flex            !important;
+    flex-direction: column          !important;
+    overflow:       hidden          !important; /* chat container doesn't scroll */
+    padding:        0               !important; /* children own their padding */
+}
+
+/* Chat header — fixed at top */
+#chatScreen .chatHeader {
+    flex-shrink: 0  !important;
+    z-index: 1      !important;
+}
+
+/* Messages area — fills space and scrolls */
+#chatScreen .chatBox,
+#chatScreen #chatMessages {
+    flex:           1               !important;
+    overflow-y:     auto            !important;
+    overflow-x:     hidden          !important;
+    -webkit-overflow-scrolling: touch !important;
+    overscroll-behavior: contain    !important;
+    min-height:     0               !important;
+    scrollbar-width: none           !important;
+    padding: 14px 16px 8px          !important;
+}
+#chatScreen .chatBox::-webkit-scrollbar,
+#chatScreen #chatMessages::-webkit-scrollbar { display: none !important; }
+
+/* Input bar — fixed at bottom */
+#chatScreen .chatInputWrap {
+    flex-shrink: 0  !important;
+}
+
+/* ── STEP 5: AUTH wrapper — isolated ─────────────────────── */
+#authWrapper {
+    overflow-y:     auto    !important;
+    overflow-x:     hidden  !important;
+    scrollbar-width: none   !important;
+}
+#authWrapper::-webkit-scrollbar { display: none !important; }
+
+/* ── STEP 6: Mobile full-screen ──────────────────────────── */
+@media (max-width: 480px) {
+    html, body {
+        overflow:   hidden  !important;
+        height:     100%    !important;
+        width:      100%    !important;
+    }
+
+    body {
+        display:    block   !important;
+        padding:    0       !important;
+        margin:     0       !important;
+    }
+
+    .phone {
+        position:       fixed       !important;
+        inset:          0           !important;
+        width:          100vw       !important;
+        height:         100dvh      !important;
+        border-radius:  0           !important;
+        border:         none        !important;
+        box-shadow:     none        !important;
+        overflow:       hidden      !important;
+    }
+
+    .appHeader {
+        padding-top: max(14px, env(safe-area-inset-top)) !important;
+    }
+
+    .nav {
+        border-radius: 0 !important;
+        padding-bottom: max(16px, env(safe-area-inset-bottom)) !important;
+    }
+
+    .appScreen.active {
+        padding: 14px 16px max(24px, env(safe-area-inset-bottom)) !important;
+    }
+
+    #chatScreen.active {
+        padding: 0 !important;
+    }
+
+    #chatScreen .chatInputWrap {
+        padding-bottom: max(12px, env(safe-area-inset-bottom)) !important;
+    }
+
+    .reminderToast {
+        bottom: calc(var(--nav-h) + max(8px, env(safe-area-inset-bottom))) !important;
+    }
+
+    .modalOverlay {
+        position: fixed !important;
+        inset: 0 !important;
+    }
+
+    .modalCard {
+        padding-bottom: max(80px, calc(env(safe-area-inset-bottom) + 60px)) !important;
+    }
+}
