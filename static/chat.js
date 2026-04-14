@@ -21,10 +21,12 @@ const QUOTES = [
 ];
 
 function renderDailyQuote() {
-    const now   = new Date();
-    const start = new Date(now.getFullYear(), 0, 0);
-    const day   = Math.floor((now - start) / 864e5);
-    safe("dailyQuote", el => el.innerText = `"${QUOTES[day % QUOTES.length]}"`);
+    safe("dailyQuote", el => {
+        const quote = (typeof AhiraContent !== "undefined")
+            ? AhiraContent.dailyQuote()
+            : "You are stronger than you think. Keep going. 💜";
+        el.innerText = `"${quote}"`;
+    });
 }
 
 
@@ -156,7 +158,13 @@ function enterApp() {
         const initials = currentUser.name.charAt(0).toUpperCase();
         const btn = document.getElementById("profileBtn");
         if (btn) btn.innerText = initials;
-        safe("chatWelcomeMsg", el => el.innerText = `Hi ${currentUser.name}! I'm Ahira 💜 How can I help you today?`);
+        
+        safe("chatWelcomeMsg", el => {
+           const welcome = (typeof AhiraContent !== "undefined")
+               ? AhiraContent.randomWelcome()
+               : "Hi there! I'm Ahira 💜";
+           el.innerText = `${welcome} How can I help you today?`;
+       });
         safe("homeGreeting",   el => el.innerText = `${timeGreet}, ${currentUser.name} 💜`);
         safe("drawerName",     el => el.innerText = currentUser.name);
         safe("drawerEmail",    el => el.innerText = currentUser.email);
@@ -272,7 +280,9 @@ async function loadHomeData() {
     updateDateTime();
     renderDailyQuote();
     renderHomeWaterDrops();
+    renderWaterTip();
     calculatePeriod();
+    renderPeriodTip();
     renderHomeMedCard();
     renderHomeGroceryCard();
     renderHomeAlerts();
@@ -938,6 +948,17 @@ function closeWaterTarget(e) { if(!e||e.target.classList.contains("modalOverlay"
 function saveWaterTarget()   { const v=parseInt(document.getElementById("waterTargetInput").value); if(v>0&&v<=20){waterTarget=v;localStorage.setItem("waterTarget",v);} closeWaterTarget(); loadWaterScreen(); renderHomeWaterDrops(); safe("drawerWaterGoal",el=>el.innerText=`${waterTarget} glasses per day`); }
 
 
+
+function renderWaterTip() {
+    const el = document.getElementById("homeWaterTip");
+    if (!el) return;
+    if (typeof AhiraContent !== "undefined") {
+        el.innerText = "💡 " + AhiraContent.sessionWater();
+        el.style.display = "block";
+    }
+}
+
+
 /* ─────────────────────────────────────────────────────────
    10. PERIOD
 ───────────────────────────────────────────────────────── */
@@ -960,6 +981,13 @@ function calculatePeriod() {
     const dc=document.getElementById("homePeriodDots"); if(dc){dc.innerHTML="";const fr=Math.floor((cycle-remaining)/cycle*8);for(let i=0;i<8;i++){const dot=document.createElement("span");dot.className="dot"+(i<fr?" filled":"")+(i===fr?" today":"");dc.appendChild(dot);}}
 }
 
+function renderPeriodTip() {
+    const el = document.getElementById("periodTipText");
+    if (!el) return;
+    if (typeof AhiraContent !== "undefined") {
+        el.innerText = AhiraContent.sessionPeriod();
+    }
+}
 
 /* ─────────────────────────────────────────────────────────
    11. MEDICINE
