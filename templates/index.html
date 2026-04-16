@@ -21,7 +21,7 @@
     <!-- ══════════════════════════════════════════════════════
          AUTH LOGO — only visible on auth screens
     ═══════════════════════════════════════════════════════ -->
-    <div class="logoContainer" id="authLogo">
+    <div class="logoContainer" id="authLogo" style="display:none;">
         <img src="/static/images/logo.png" class="appLogo" alt="Ahira">
         <h1 class="brandName">AHIRA</h1>
         <p class="tagline">Always by your side.</p>
@@ -632,15 +632,15 @@
             <div class="drawerBody">
 
                 <div class="drawerSectionTitle">Account</div>
-                <div class="drawerItem" onclick="openEditProfile()">
+                <div class="drawerItem">
                     <div class="drawerItemIcon" style="background:rgba(138,108,255,0.1);">👤</div>
-                    <div class="drawerItemText"><div class="drawerItemLabel">Edit Profile</div><div class="drawerItemSub" id="drawerProfileSub">Name and email</div></div>
+                    <div class="drawerItemText"><div class="drawerItemLabel">Edit Profile</div><div class="drawerItemSub">Name and email</div></div>
                     <span class="drawerItemArrow">›</span>
                 </div>
-                <div class="drawerItem" onclick="closeDrawer();navApp('periodScreen',null)">
+                <div class="drawerItem">
                     <div class="drawerItemIcon" style="background:rgba(255,182,193,0.2);">🌸</div>
-                    <div class="drawerItemText"><div class="drawerItemLabel">Period Settings</div><div class="drawerItemSub">Set cycle & last date</div></div>
-                    <span class="drawerItemArrow">›</span>
+                    <div class="drawerItemText"><div class="drawerItemLabel">Period Settings</div><div class="drawerItemSub">Cycle length, start date</div></div>
+                    <span class="drawerItemArrow" onclick="navApp('periodScreen');closeDrawer()">›</span>
                 </div>
 
                 <div class="drawerDivider"></div>
@@ -673,7 +673,7 @@
                 <div class="drawerItem">
                     <div class="drawerItemIcon" style="background:rgba(167,243,208,0.2);">🎯</div>
                     <div class="drawerItemText"><div class="drawerItemLabel">Daily Water Goal</div><div class="drawerItemSub" id="drawerWaterGoal">8 glasses per day</div></div>
-                    <span class="drawerItemArrow" onclick="closeDrawer();navApp('waterScreen',null);setTimeout(openWaterTarget,300)">›</span>
+                    <span class="drawerItemArrow" onclick="navApp('waterScreen');closeDrawer();openWaterTarget()">›</span>
                 </div>
                 <div class="drawerItem">
                     <div class="drawerItemIcon" style="background:rgba(252,211,77,0.15);">✨</div>
@@ -684,7 +684,7 @@
                 <div class="drawerDivider"></div>
 
                 <div class="drawerSectionTitle">About</div>
-                <div class="drawerItem" onclick="openAboutAhira()">
+                <div class="drawerItem">
                     <div class="drawerItemIcon" style="background:rgba(138,108,255,0.1);">💜</div>
                     <div class="drawerItemText"><div class="drawerItemLabel">About Ahira</div><div class="drawerItemSub">Version 1.0 · Always by your side</div></div>
                     <span class="drawerItemArrow">›</span>
@@ -701,48 +701,7 @@
 
 </div><!-- /phone -->
 
-<script src="/static/ahira_content.js"></script>
 <script src="/static/chat.js"></script>
 <script src="/static/splash.js"></script>
-
-<!-- ── EDIT PROFILE MODAL ──────────────────────────────── -->
-<div id="editProfileModal" class="modalOverlay" style="display:none;" onclick="closeEditProfile(event)">
-    <div class="modalCard" onclick="event.stopPropagation()">
-        <div class="modalTitle">Edit Profile</div>
-        <div class="formGroup">
-            <div class="formLabel">Your Name</div>
-            <input id="editName" class="formInput" type="text" placeholder="Your name">
-        </div>
-        <div class="formGroup">
-            <div class="formLabel">Email</div>
-            <input id="editEmail" class="formInput" type="email" placeholder="your@email.com" disabled style="opacity:0.5;cursor:not-allowed;">
-            <div style="font-size:11px;color:var(--t3);margin-top:4px;">Email cannot be changed</div>
-        </div>
-        <div id="editProfileError" class="authError" style="display:none;"></div>
-        <div class="btnGroup" style="margin-top:16px;">
-            <button class="actionBtn" onclick="saveProfile()">Save Changes</button>
-            <button class="secondaryBtn" onclick="closeEditProfile()">Cancel</button>
-        </div>
-    </div>
-</div>
-
-<!-- ── ABOUT AHIRA MODAL ───────────────────────────────── -->
-<div id="aboutModal" class="modalOverlay" style="display:none;" onclick="closeAbout(event)">
-    <div class="modalCard" onclick="event.stopPropagation()" style="text-align:center;padding-bottom:40px;">
-        <img src="/static/images/logo.png" style="width:64px;margin:0 auto 12px;display:block;filter:drop-shadow(0 4px 12px rgba(108,63,206,0.3));">
-        <div class="modalTitle" style="text-align:center;">Ahira</div>
-        <div style="font-size:13px;color:var(--t3);margin-bottom:20px;">Version 1.0 · Always by your side</div>
-        <div style="background:var(--grad-soft);border-radius:16px;padding:16px;text-align:left;font-size:13px;color:var(--t2);line-height:1.8;">
-            <div>💜 AI companion built for women</div>
-            <div>🌸 Period & wellness tracking</div>
-            <div>📅 Smart reminders & planner</div>
-            <div>💊 Medicine & grocery manager</div>
-            <div>💧 Hydration tracker</div>
-        </div>
-        <div style="margin-top:16px;font-size:12px;color:var(--t4);">Made with love for every woman 🌷</div>
-        <button class="actionBtn" style="margin-top:16px;" onclick="closeAbout()">Close</button>
-    </div>
-</div>
-
 </body>
 </html>
