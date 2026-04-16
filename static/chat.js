@@ -187,22 +187,188 @@ function enterApp() {
    3. PROFILE DRAWER
 ───────────────────────────────────────────────────────── */
 
+/* ============================================================
+   SETTINGS DRAWER FIXES FOR chat.js
+   
+   ADD all these functions anywhere in chat.js
+   (good place: after the closeDrawer() function, around line 200)
+   
+   ALSO: Replace the existing toggleSetting() function with the
+   version at the bottom of this file.
+============================================================ */
+
+
+/* ── SETTINGS STATE ──────────────────────────────────────── */
+// Loads settings from localStorage so they persist across sessions
+function loadSettings() {
+    const settings = JSON.parse(localStorage.getItem("ahiraSettings") || "{}");
+    const defaults = {
+        reminders: true,
+        water:     true,
+        medicine:  true,
+        period:    true,
+        quotes:    true,
+    };
+    return { ...defaults, ...settings };
+}
+
+function saveSettings(settings) {
+    localStorage.setItem("ahiraSettings", JSON.stringify(settings));
+}
+
+// Call this when drawer opens to sync toggle states
+function syncDrawerToggles() {
+    const s = loadSettings();
+    const map = {
+        toggleReminders: s.reminders,
+        toggleWater:     s.water,
+        toggleMedicine:  s.medicine,
+        togglePeriod:    s.period,
+        toggleQuotes:    s.quotes,
+    };
+    Object.entries(map).forEach(([id, val]) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (val) el.classList.add("on");
+        else     el.classList.remove("on");
+    });
+}
+
+/* ── REPLACE toggleSetting ───────────────────────────────── */
+// Find the old toggleSetting function and replace it with this:
+function toggleSetting(btn) {
+    btn.classList.toggle("on");
+    const isOn = btn.classList.contains("on");
+
+    // Map button id to settings key
+    const keyMap = {
+        toggleReminders: "reminders",
+        toggleWater:     "water",
+        toggleMedicine:  "medicine",
+        togglePeriod:    "period",
+        toggleQuotes:    "quotes",
+    };
+
+    const key = keyMap[btn.id];
+    if (!key) return;
+
+    const settings = loadSettings();
+    settings[key] = isOn;
+    saveSettings(settings);
+
+    // Show feedback toast
+    const label = {
+        reminders: "Reminder Alerts",
+        water:     "Water Reminders",
+        medicine:  "Medicine Reminders",
+        period:    "Period Alerts",
+        quotes:    "Daily Quotes",
+    }[key];
+
+    showSettingToast(`${label} ${isOn ? "enabled ✅" : "disabled"}`);
+}
+
+function showSettingToast(msg) {
+    const existing = document.getElementById("settingToast");
+    if (existing) existing.remove();
+    const toast = document.createElement("div");
+    toast.id = "settingToast";
+    toast.style.cssText = "position:fixed;bottom:100px;left:50%;transform:translateX(-50%);background:#1A0A3C;color:white;padding:10px 20px;border-radius:20px;font-size:13px;font-weight:600;z-index:9999;opacity:0;transition:opacity 0.3s;white-space:nowrap;box-shadow:0 4px 20px rgba(0,0,0,0.3);";
+    toast.innerText = msg;
+    document.body.appendChild(toast);
+    requestAnimationFrame(() => toast.style.opacity = "1");
+    setTimeout(() => {
+        toast.style.opacity = "0";
+        setTimeout(() => toast.remove(), 400);
+    }, 1800);
+}
+
+
+/* ── EDIT PROFILE ────────────────────────────────────────── */
+function openEditProfile() {
+    closeDrawer();
+    const modal = document.getElementById("editProfileModal");
+    if (!modal) return;
+    // Pre-fill current values
+    safe("editName",  el => el.value = currentUser?.name  || "");
+    safe("editEmail", el => el.value = currentUser?.email || "");
+    safe("editProfileError", el => { el.style.display = "none"; el.innerText = ""; });
+    modal.style.display = "flex";
+}
+
+function closeEditProfile(e) {
+    if (!e || e.target.classList.contains("modalOverlay")) {
+        const modal = document.getElementById("editProfileModal");
+        if (modal) modal.style.display = "none";
+    }
+}
+
+async function saveProfile() {
+    const name = document.getElementById("editName")?.value.trim();
+    if (!name || name.length < 2) {
+        safe("editProfileError", el => {
+            el.innerText = "Please enter a valid name (at least 2 characters).";
+            el.style.display = "block";
+        });
+        return;
+    }
+
+    // Update local display immediately
+    if (currentUser) currentUser.name = name;
+    safe("drawerName",   el => el.innerText = name);
+    safe("drawerAvatar", el => el.innerText = name.charAt(0).toUpperCase());
+    const profileBtn = document.getElementById("profileBtn");
+    if (profileBtn) profileBtn.innerText = name.charAt(0).toUpperCase();
+
+    // Update greeting on home screen
+    const hour = new Date().getHours();
+    const timeGreet = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+    safe("homeGreeting", el => el.innerText = `${timeGreet}, ${name} 💜`);
+
+    // Save to server (best effort — don't block if it fails)
+    try {
+        await fetch("/update_profile", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name })
+        });
+    } catch(e) { /* server update optional */ }
+
+    closeEditProfile();
+    showSettingToast("Profile updated ✅");
+}
+
+
+/* ── ABOUT MODAL ─────────────────────────────────────────── */
+function openAboutAhira() {
+    closeDrawer();
+    const modal = document.getElementById("aboutModal");
+    if (modal) modal.style.display = "flex";
+}
+
+function closeAbout(e) {
+    if (!e || e.target.classList.contains("modalOverlay")) {
+        const modal = document.getElementById("aboutModal");
+        if (modal) modal.style.display = "none";
+    }
+}
+
+
+/* ── REPLACE openDrawer to also sync toggles ─────────────── */
+// Find the existing openDrawer() function and replace it with this:
 function openDrawer() {
     document.getElementById("profileDrawer").classList.add("open");
     document.getElementById("drawerOverlay").classList.add("open");
-    // Update water goal label in drawer
     safe("drawerWaterGoal", el => el.innerText = `${waterTarget} glasses per day`);
-}
 
-function closeDrawer() {
-    document.getElementById("profileDrawer").classList.remove("open");
-    document.getElementById("drawerOverlay").classList.remove("open");
-}
+    // Update profile sub text
+    if (currentUser) {
+        safe("drawerProfileSub", el => el.innerText = currentUser.email || "Name and email");
+    }
 
-function toggleSetting(btn) {
-    btn.classList.toggle("on");
+    // Sync all toggle states from localStorage
+    syncDrawerToggles();
 }
-
 
 /* ─────────────────────────────────────────────────────────
    4. STATE
