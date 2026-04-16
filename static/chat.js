@@ -380,6 +380,8 @@ function renderHomeGroceryCard() {
 const OPENROUTER_KEY = "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";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const CHAT_MODELS = [
+   "meta-llama/llama-3.1-8b-instruct:free"
+   "mistralai/mistral-7b-instruct:free"
     "openrouter/free",
     "qwen/qwen3-4b:free",
     "google/gemma-3n-e4b-it:free",
@@ -413,68 +415,89 @@ async function sendMessage() {
     const input   = document.getElementById("message");
     const message = input.value.trim();
     if (!message) return;
-
-    const chatEl = document.getElementById("chatMessages");
+ 
+    const chatEl = document.getElementById("chatMessages") || document.getElementById("chat");
+    if (!chatEl) return;
     chatEl.querySelector(".chatSuggestions")?.remove();
-
-    // User bubble — RIGHT side
+ 
     appendUserBubble(chatEl, message);
     input.value = "";
     chatEl.scrollTop = chatEl.scrollHeight;
-
-    // Ahira typing — LEFT side
+ 
     const typingWrap = createTypingIndicator();
     chatEl.appendChild(typingWrap);
     chatEl.scrollTop = chatEl.scrollHeight;
-    const botMsgEl = typingWrap.querySelector(".botMsg");
-
+    const botMsgEl = typingWrap.querySelector(".botMsg") || typingWrap.querySelector(".bubble--bot");
+ 
     const messages = [
-        { role:"system", content:buildSystemPrompt() },
+        { role: "system", content: buildSystemPrompt() },
         ...chatHistory,
-        { role:"user", content:message }
+        { role: "user", content: message }
     ];
-
-    let reply = null, lastErr = "";
+ 
+    let reply = null;
+ 
+    // Race the first 2 models — use whichever responds first
+    const tryModel = (model) => fetch(OPENROUTER_URL, {
+        method: "POST",
+        headers: {
+            "Authorization":      `Bearer ${OPENROUTER_KEY}`,
+            "HTTP-Referer":       "https://ahira.app",
+            "X-OpenRouter-Title": "Ahira",
+            "Content-Type":       "application/json"
+        },
+        body: JSON.stringify({
+            model,
+            messages,
+            max_tokens:  350,    // shorter = faster
+            temperature: 0.80,
+        }),
+        signal: AbortSignal.timeout(12000)  // 12s timeout per model
+    }).then(async r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const d = await r.json();
+        const c = d?.choices?.[0]?.message?.content;
+        if (!c) throw new Error("empty");
+        return c;
+    });
+ 
+    // Try models sequentially with short timeout
     for (const model of CHAT_MODELS) {
         try {
-            const res = await fetch(OPENROUTER_URL, {
-                method: "POST",
-                headers: {
-                    "Authorization": `Bearer ${OPENROUTER_KEY}`,
-                    "HTTP-Referer":  "https://ahira.app",
-                    "X-OpenRouter-Title": "Ahira",
-                    "Content-Type":  "application/json"
-                },
-                body: JSON.stringify({ model, messages, max_tokens:450, temperature:0.85 })
-            });
-            const rawText = await res.text();
-            if (!res.ok) { lastErr = `${model}: HTTP ${res.status}`; continue; }
-            const data    = JSON.parse(rawText);
-            const content = data?.choices?.[0]?.message?.content;
-            if (content) { reply = content; break; }
-            lastErr = `${model}: empty`;
+            reply = await tryModel(model);
+            if (reply) break;
         } catch(e) {
-            lastErr = `${model}: ${e.message}`;
-            if (e.message.includes("Failed to fetch") || e.message.includes("NetworkError")) break;
+            console.log(`[Chat] ${model} failed: ${e.message}`);
+            continue;
         }
     }
-
+ 
     if (!reply) {
-        botMsgEl.classList.remove("typing");
-        botMsgEl.innerHTML = `<b>Connection issue 😕</b><br><span style="font-size:12px;opacity:0.8;">Could not reach Ahira right now.</span>`;
+        if (botMsgEl) {
+            botMsgEl.classList.remove("typing");
+            botMsgEl.innerHTML = `<b>Connection issue 😕</b><br><span style="font-size:12px;opacity:0.75;">Check your internet and try again.</span>`;
+        }
         chatEl.scrollTop = chatEl.scrollHeight;
         return;
     }
-
+ 
     const { reply: cleanReply, reminder } = parseReminderTag(reply);
-    botMsgEl.classList.remove("typing");
-    renderBotText(botMsgEl, cleanReply);
-    chatHistory.push({ role:"user",      content:message    });
-    chatHistory.push({ role:"assistant", content:cleanReply });
-    if (chatHistory.length > 40) chatHistory = chatHistory.slice(-40);
-    if (reminder) { await saveReminderToBackend(reminder); showReminderToast(reminder); }
+    if (botMsgEl) {
+        botMsgEl.classList.remove("typing");
+        renderBotText(botMsgEl, cleanReply);
+    }
+ 
+    chatHistory.push({ role: "user",      content: message    });
+    chatHistory.push({ role: "assistant", content: cleanReply });
+    if (chatHistory.length > 30) chatHistory = chatHistory.slice(-30);
+ 
+    if (reminder) {
+        await saveReminderToBackend(reminder);
+        showReminderToast(reminder);
+    }
     chatEl.scrollTop = chatEl.scrollHeight;
 }
+
 
 function parseReminderTag(text) {
     const match = text.match(/\[REMINDER:\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(\d{2}:\d{2})\s*\]/i);
@@ -963,23 +986,113 @@ function renderWaterTip() {
    10. PERIOD
 ───────────────────────────────────────────────────────── */
 
+ 
 function setPeriodDate() {
-    const input=prompt("Enter your last period start date (YYYY-MM-DD):"); if(!input) return;
-    lastPeriodDate=new Date(input); localStorage.setItem("lastPeriodDate",input); calculatePeriod();
+    // Open the native date picker via a hidden input
+    let picker = document.getElementById("_periodDatePicker");
+    if (!picker) {
+        picker = document.createElement("input");
+        picker.type = "date";
+        picker.id   = "_periodDatePicker";
+        picker.style.cssText = "position:fixed;opacity:0;pointer-events:none;top:50%;left:50%;";
+        picker.max = new Date().toISOString().slice(0, 10); // can't be future
+        document.body.appendChild(picker);
+ 
+        picker.addEventListener("change", () => {
+            const val = picker.value;
+            if (!val) return;
+            lastPeriodDate = new Date(val + "T00:00:00");
+            localStorage.setItem("lastPeriodDate", val);
+            calculatePeriod();
+ 
+            // Show confirmation toast
+            const toast = document.createElement("div");
+            toast.style.cssText = "position:fixed;bottom:120px;left:50%;transform:translateX(-50%);background:#6C3FCE;color:white;padding:10px 20px;border-radius:20px;font-size:13px;font-weight:600;z-index:9999;opacity:0;transition:opacity 0.3s;white-space:nowrap;";
+            toast.innerText = "✅ Period date saved!";
+            document.body.appendChild(toast);
+            requestAnimationFrame(() => toast.style.opacity = "1");
+            setTimeout(() => {
+                toast.style.opacity = "0";
+                setTimeout(() => toast.remove(), 400);
+            }, 2000);
+        });
+    }
+    picker.showPicker ? picker.showPicker() : picker.click();
 }
 
+
 function calculatePeriod() {
-    if(!lastPeriodDate) return;
-    const today=new Date(),diff=Math.floor((today-lastPeriodDate)/(1000*60*60*24)),cycle=28;
-    const remaining=cycle-(diff%cycle),progress=((cycle-remaining)/cycle)*100;
-    ["periodDays","periodDaysDetail","periodDaysBig"].forEach(id=>safe(id,el=>el.innerText=remaining));
-    ["periodFill","periodFillWell","periodFillDetail"].forEach(id=>safe(id,el=>el.style.width=progress+"%"));
-    safe("periodBigLabel",el=>el.innerText=`Next Period in ${remaining} Days`);
-    safe("wellPeriodSub",el=>el.innerText=`Next in ${remaining} days`);
-    const nextDate=new Date(lastPeriodDate); nextDate.setDate(nextDate.getDate()+cycle-(diff%cycle));
-    safe("periodDateLabel",el=>el.innerText=nextDate.toLocaleDateString("en-IN",{day:"numeric",month:"long",year:"numeric"}));
-    const dc=document.getElementById("homePeriodDots"); if(dc){dc.innerHTML="";const fr=Math.floor((cycle-remaining)/cycle*8);for(let i=0;i<8;i++){const dot=document.createElement("span");dot.className="dot"+(i<fr?" filled":"")+(i===fr?" today":"");dc.appendChild(dot);}}
+    if (!lastPeriodDate) {
+        // Show "Set date" state
+        safe("periodBigLabel",  el => el.innerText = "Tap 'Update Date' to begin tracking");
+        safe("periodDateLabel", el => el.innerText  = "No period date set yet");
+        safe("wellPeriodSub",   el => el.innerText  = "Tap to set your last period date");
+        ["periodDays","periodDaysDetail","periodDaysBig"].forEach(id => safe(id, el => el.innerText = "--"));
+        return;
+    }
+ 
+    const today     = new Date();
+    today.setHours(0, 0, 0, 0);
+    const start     = new Date(lastPeriodDate);
+    start.setHours(0, 0, 0, 0);
+ 
+    const daysSince = Math.floor((today - start) / (1000 * 60 * 60 * 24));
+    const cycle     = 28;
+ 
+    // Where in the current cycle are we?
+    const dayInCycle = daysSince % cycle;          // 0–27
+    const remaining  = cycle - dayInCycle;          // days until next period
+    const progress   = (dayInCycle / cycle) * 100; // % through cycle
+ 
+    // Determine current phase
+    let phase = "";
+    let phaseEmoji = "";
+    if (dayInCycle <= 5) {
+        phase = "Menstrual Phase"; phaseEmoji = "🌸";
+    } else if (dayInCycle <= 13) {
+        phase = "Follicular Phase"; phaseEmoji = "🌱";
+    } else if (dayInCycle <= 16) {
+        phase = "Ovulation Phase"; phaseEmoji = "⭐";
+    } else {
+        phase = "Luteal Phase"; phaseEmoji = "🌙";
+    }
+ 
+    // Next period date
+    const nextDate = new Date(start);
+    nextDate.setDate(start.getDate() + daysSince + remaining);
+    const nextDateStr = nextDate.toLocaleDateString("en-IN", {
+        day: "numeric", month: "long", year: "numeric"
+    });
+ 
+    // Update all UI elements
+    ["periodDays","periodDaysDetail","periodDaysBig"].forEach(id =>
+        safe(id, el => el.innerText = remaining)
+    );
+    ["periodFill","periodFillWell","periodFillDetail"].forEach(id =>
+        safe(id, el => el.style.width = progress + "%")
+    );
+ 
+    safe("periodBigLabel",  el => el.innerText = `Next Period in ${remaining} Day${remaining !== 1 ? "s" : ""}`);
+    safe("periodDateLabel", el => el.innerText  = `📅 Expected: ${nextDateStr}`);
+    safe("wellPeriodSub",   el => el.innerText  = `Next in ${remaining} days · ${phaseEmoji} ${phase}`);
+ 
+    // Cycle phase label if element exists
+    safe("currentPhaseLabel", el => el.innerText = `${phaseEmoji} ${phase}`);
+    safe("dayInCycleLabel",   el => el.innerText = `Day ${dayInCycle + 1} of ${cycle}`);
+ 
+    // Home screen dots
+    const dc = document.getElementById("homePeriodDots");
+    if (dc) {
+        dc.innerHTML = "";
+        const filled = Math.floor((dayInCycle / cycle) * 8);
+        for (let i = 0; i < 8; i++) {
+            const dot = document.createElement("span");
+            dot.className = "dot" + (i < filled ? " filled" : "") + (i === filled ? " today" : "");
+            dc.appendChild(dot);
+        }
+    }
 }
+
 
 function renderPeriodTip() {
     const el = document.getElementById("periodTipText");
@@ -1076,8 +1189,26 @@ function filterGrocery(type,btn) { currentGroceryFilter=type; document.querySele
    13. WELLNESS LOADER
 ───────────────────────────────────────────────────────── */
 
-function loadWellnessScreen() { calculatePeriod(); renderHomeWaterDrops(); loadMedicines(); loadGrocery(); }
-
+ 
+function loadWellnessScreen() {
+    calculatePeriod();
+    renderHomeWaterDrops();
+    loadMedicines();
+    loadGrocery();
+ 
+    // Rotate wellness tip on every load (uses AhiraContent if available)
+    const tipEl = document.getElementById("wellnessDailyTip");
+    if (tipEl && typeof AhiraContent !== "undefined") {
+        tipEl.innerText = AhiraContent.randomWaterTip();
+    }
+ 
+    // Rotate period tip on every load
+    const periodTipEl = document.getElementById("wellnessPeriodTip");
+    if (periodTipEl && typeof AhiraContent !== "undefined") {
+        periodTipEl.innerText = "💡 " + AhiraContent.randomPeriodTip();
+    }
+}
+ 
 
 /* ─────────────────────────────────────────────────────────
    14. MOOD CHECKER
@@ -1144,11 +1275,30 @@ function selectMood(btn, mood, emoji) {
 
 
 /* ── 5. REPLACE window.onload (at very bottom of chat.js) ─ */
+ 
 window.onload = function() {
     document.getElementById("authLogo").style.display    = "none";
     document.getElementById("authWrapper").style.display = "none";
     document.getElementById("appWrapper").style.display  = "none";
     document.querySelectorAll(".appScreen").forEach(s => s.classList.remove("active"));
+ 
+    // Intercept browser back button — go home instead of closing
+    window.history.pushState({ screen: "homeScreen" }, "", "");
+    window.addEventListener("popstate", (e) => {
+        const appVisible = document.getElementById("appWrapper").style.display !== "none";
+        if (!appVisible) return; // auth screen — let it close
+ 
+        // If not on home, go home
+        const home = document.getElementById("homeScreen");
+        if (home && !home.classList.contains("active")) {
+            navApp("homeScreen", document.querySelector(".navItem"));
+            window.history.pushState({ screen: "homeScreen" }, "", "");
+        } else {
+            // Already on home — push state again to prevent close
+            window.history.pushState({ screen: "homeScreen" }, "", "");
+        }
+    });
+ 
     if (typeof AhiraSplash !== "undefined") AhiraSplash.init(2600);
     checkSession();
 };
