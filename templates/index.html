@@ -189,7 +189,7 @@
 
 
             <!-- CHAT ──────────────────────────────────────── -->
-            <div id="chatScreen" class="appScreen">
+            <div id="chatScreen" class="appScreen" style="display:none;">
 
                 <!-- Chat header -->
                 <div class="chatHeader">
@@ -239,7 +239,7 @@
 
 
             <!-- PLANNER ───────────────────────────────────── -->
-            <div id="plannerScreen" class="appScreen">
+            <div id="plannerScreen" class="appScreen" style="display:none;">
 
                 <!-- Header -->
                 <div class="plannerHeader">
@@ -327,7 +327,7 @@
 
 
             <!-- WELLNESS ──────────────────────────────────── -->
-            <div id="wellnessScreen" class="appScreen">
+            <div id="wellnessScreen" class="appScreen" style="display:none;">
                 <h2 class="sectionTitle">Wellness</h2>
                 <p style="font-size:13px;color:var(--text-light);margin-bottom:4px;">Your daily health overview</p>
 
@@ -371,12 +371,14 @@
 
 
             <!-- PERIOD ────────────────────────────────────── -->
-            <div id="periodScreen" class="appScreen">
+            <div id="periodScreen" class="appScreen" style="display:none;">
                 <div class="screenHeader"><button class="backBtn" onclick="navApp('wellnessScreen')">‹</button><span class="screenTitle">Period Tracker</span></div>
                 <div class="periodBigCard">
                     <div class="periodBigLabel" id="periodBigLabel">Next Period in -- Days</div>
                     <div class="progressBar" style="margin-top:14px;"><div id="periodFillDetail"></div></div>
                     <div class="periodDateLabel" id="periodDateLabel">Set your last period date</div>
+                    <div id="currentPhaseLabel" style="margin-top:10px;font-size:14px;font-weight:600;color:var(--p1);"></div>
+                    <div id="dayInCycleLabel" style="margin-top:4px;font-size:12px;color:var(--t3);"></div>
                 </div>
                 <div class="cardSoft">
                     <div class="cardHeader">Cycle Info</div>
@@ -408,7 +410,7 @@
 
 
             <!-- MEDICINE ──────────────────────────────────── -->
-            <div id="medicineScreen" class="appScreen">
+            <div id="medicineScreen" class="appScreen" style="display:none;">
                 <div class="screenHeader">
                     <button class="backBtn" onclick="navApp('wellnessScreen')">‹</button>
                     <span class="screenTitle">Medications</span>
@@ -463,7 +465,7 @@
 
 
             <!-- WATER ─────────────────────────────────────── -->
-            <div id="waterScreen" class="appScreen">
+            <div id="waterScreen" class="appScreen" style="display:none;">
                 <div class="screenHeader">
                     <button class="backBtn" onclick="navApp('wellnessScreen')">‹</button>
                     <span class="screenTitle">Water Intake</span>
@@ -527,7 +529,7 @@
 
 
             <!-- GROCERY ───────────────────────────────────── -->
-            <div id="groceryScreen" class="appScreen">
+            <div id="groceryScreen" class="appScreen" style="display:none;">
                 <div class="screenHeader">
                     <button class="backBtn" onclick="navApp('wellnessScreen')">‹</button>
                     <span class="screenTitle">Grocery List</span>
@@ -698,7 +700,7 @@
     </div><!-- /appWrapper -->
 
 </div><!-- /phone -->
-<script src="/static/ahira_content.js"></script>
+
 <script src="/static/chat.js"></script>
 <script src="/static/splash.js"></script>
 </body>
