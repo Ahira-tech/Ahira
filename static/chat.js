@@ -1,5 +1,7 @@
 /* ==========================================================
-   AHIRA — chat.js  (complete)
+   AHIRA — chat.js  (fixed)
+   KEY FIX: navApp and enterApp now clear inline style="display:none"
+   before toggling active class, so CSS can control display properly.
 ========================================================== */
 
 
@@ -7,20 +9,6 @@
    1. DAILY QUOTES
 ───────────────────────────────────────────────────────── */
 
-const QUOTES = [
-    "You are stronger than you think, braver than you feel, and more loved than you know. 💜",
-    "Take care of yourself the way you take care of everyone else. You deserve it.",
-    "Small steps every day still move you forward. Progress is progress. 🌸",
-    "Your feelings are valid. Rest is productive. And asking for help is brave.",
-    "Today doesn't have to be perfect. It just has to be yours. ✨",
-    "Be gentle with yourself. You are a work in progress — and that's beautiful.",
-    "Nourish your body, rest your mind, and trust the journey you're on. 💜",
-    "You don't have to have it all together. Just keep going, one moment at a time.",
-    "The most important relationship you have is the one with yourself. 🌿",
-    "Celebrate the small wins. They're the foundation of the big ones. 🌟"
-];
-
-// ── Inline content (no external file needed) ──────────────
 const _QUOTES = [
     "You have survived every hard day so far. That's a 100% success rate. 💜",
     "Strength doesn't always roar. Sometimes it's the quiet voice saying I'll try again tomorrow.",
@@ -184,7 +172,6 @@ function _daily(arr) {
     return arr[d % arr.length];
 }
 
-// AhiraContent object — works whether ahira_content.js is loaded or not
 const AhiraContent = {
     randomQuote:     () => _pick(_QUOTES),
     randomPeriodTip: () => _pick(_PERIOD_TIPS),
@@ -283,22 +270,22 @@ async function submitLogin() {
     } finally { btn.disabled = false; btn.innerText = "Sign In"; }
 }
 
-
-
-/* ── 4. REPLACE submitLogout ───────────────────────────── */
 async function submitLogout() {
     closeDrawer();
     try { await fetch("/logout", { method: "POST" }); } catch(e) {}
     currentUser = null; chatHistory = [];
     ["water","waterTarget","waterLog","waterWeekly","medicines",
      "groceryItems","taskMeta","lastPeriodDate"].forEach(k => localStorage.removeItem(k));
-    document.querySelectorAll(".appScreen").forEach(s => s.classList.remove("active"));
+    // Reset all screens
+    document.querySelectorAll(".appScreen").forEach(s => {
+        s.classList.remove("active");
+        s.style.display = "none";
+    });
     document.getElementById("appWrapper").style.display  = "none";
     document.getElementById("authLogo").style.display    = "block";
     document.getElementById("authWrapper").style.display = "block";
     showAuthPanel("loginScreen");
 }
-
 
 async function checkSession() {
     try {
@@ -308,32 +295,38 @@ async function checkSession() {
         else showAuth();
     } catch(e) { showAuth(); }
 }
- 
- 
+
 function showAuth() {
-    document.querySelectorAll(".appScreen").forEach(s => s.classList.remove("active"));
+    // Hide all screens
+    document.querySelectorAll(".appScreen").forEach(s => {
+        s.classList.remove("active");
+        s.style.display = "none";
+    });
     document.getElementById("authLogo").style.display    = "block";
     document.getElementById("authWrapper").style.display = "block";
     document.getElementById("appWrapper").style.display  = "none";
     showAuthPanel("loginScreen");
-}  
+}
 
 function enterApp() {
     document.getElementById("authLogo").style.display    = "none";
     document.getElementById("authWrapper").style.display = "none";
     document.getElementById("appWrapper").style.display  = "flex";
- 
-    // Clear any leftover active states
-    document.querySelectorAll(".appScreen").forEach(s => s.classList.remove("active"));
- 
+
+    // ── KEY FIX: clear ALL inline display styles before switching ──
+    document.querySelectorAll(".appScreen").forEach(s => {
+        s.classList.remove("active");
+        s.style.display = "none";
+    });
+
     const hour = new Date().getHours();
     const timeGreet = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
- 
+
     if (currentUser) {
         const initials = currentUser.name.charAt(0).toUpperCase();
         const btn = document.getElementById("profileBtn");
         if (btn) btn.innerText = initials;
-        
+
         safe("chatWelcomeMsg", el => {
             el.innerText = AhiraContent.randomWelcome() + " How can I help you today?";
         });
@@ -342,7 +335,7 @@ function enterApp() {
         safe("drawerEmail",    el => el.innerText = currentUser.email);
         safe("drawerAvatar",   el => el.innerText = initials);
     }
- 
+
     water          = parseInt(localStorage.getItem("water"))          || 0;
     waterTarget    = parseInt(localStorage.getItem("waterTarget"))    || 8;
     waterLog       = JSON.parse(localStorage.getItem("waterLog"))     || [];
@@ -351,9 +344,10 @@ function enterApp() {
     groceryItems   = JSON.parse(localStorage.getItem("groceryItems")) || [];
     lastPeriodDate = localStorage.getItem("lastPeriodDate")
         ? new Date(localStorage.getItem("lastPeriodDate")) : null;
- 
+
     navApp("homeScreen", document.querySelector(".navItem"));
 }
+
 
 /* ─────────────────────────────────────────────────────────
    3. PROFILE DRAWER
@@ -362,7 +356,6 @@ function enterApp() {
 function openDrawer() {
     document.getElementById("profileDrawer").classList.add("open");
     document.getElementById("drawerOverlay").classList.add("open");
-    // Update water goal label in drawer
     safe("drawerWaterGoal", el => el.innerText = `${waterTarget} glasses per day`);
 }
 
@@ -398,20 +391,26 @@ const safe = (id, fn) => { const el = document.getElementById(id); if (el) fn(el
 
 
 /* ─────────────────────────────────────────────────────────
-   5. NAVIGATION — isolated screen switching
+   5. NAVIGATION — *** MAIN FIX IS HERE ***
+   The bug: every appScreen has style="display:none" in HTML.
+   CSS .appScreen.active sets display:block, but inline styles
+   have higher specificity and override it. Fix: explicitly
+   clear inline display before toggling the active class.
 ───────────────────────────────────────────────────────── */
- 
-/* ── 1. REPLACE navApp ─────────────────────────────────── */
+
 function navApp(screen, btn) {
-    // Remove active from all screens
+    // Step 1: Hide ALL screens — remove active class AND set inline display:none
     document.querySelectorAll(".appScreen").forEach(s => {
         s.classList.remove("active");
+        s.style.display = "none";
     });
- 
-    // Add active to target screen
+
+    // Step 2: Show target screen — clear inline style, let CSS take over
     const target = document.getElementById(screen);
     if (target) {
-        target.classList.add("active");
+        target.style.display = "";       // remove inline display:none
+        target.classList.add("active");  // CSS .appScreen.active now controls display
+
         if (screen === "chatScreen") {
             setTimeout(() => {
                 const box = document.getElementById("chatMessages") || document.getElementById("chat");
@@ -421,14 +420,14 @@ function navApp(screen, btn) {
             target.scrollTop = 0;
         }
     }
- 
-    // Update nav highlight
+
+    // Step 3: Update nav highlight
     document.querySelectorAll(".navItem").forEach(b => b.classList.remove("active"));
     if (btn && btn.classList && btn.classList.contains("navItem")) {
         btn.classList.add("active");
     }
- 
-    // Run screen loader
+
+    // Step 4: Run screen loader
     const loaders = {
         homeScreen:     loadHomeData,
         plannerScreen:  loadPlanner,
@@ -440,9 +439,9 @@ function navApp(screen, btn) {
     };
     if (loaders[screen]) loaders[screen]();
 }
- 
+
 const nav = navApp;
-  
+
 
 /* ─────────────────────────────────────────────────────────
    6. HOME
@@ -530,24 +529,6 @@ function renderHomeGroceryCard() {
 /* ─────────────────────────────────────────────────────────
    7. CHAT — OpenRouter direct from browser
 ───────────────────────────────────────────────────────── */
-/* ================================================================
-   PATCH FILE — replace sections 7 (CHAT) and 8 (PLANNER) in chat.js
-
-   INSTRUCTIONS:
-   In your chat.js file:
-   1. Find the comment: "7. CHAT — OpenRouter direct from browser"
-      Replace everything from that comment down to (but NOT including)
-      "9. WATER" with the CHAT section below.
-
-   2. Find the comment: "8. PLANNER"
-      Replace everything from that comment down to (but NOT including)
-      "9. WATER" with the PLANNER section below.
-================================================================ */
-
-
-/* ─────────────────────────────────────────────────────────
-   7. CHAT — OpenRouter direct from browser
-───────────────────────────────────────────────────────── */
 
 const OPENROUTER_KEY = "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";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -584,29 +565,28 @@ async function sendMessage() {
     const input   = document.getElementById("message");
     const message = input.value.trim();
     if (!message) return;
- 
+
     const chatEl = document.getElementById("chatMessages") || document.getElementById("chat");
     if (!chatEl) return;
     chatEl.querySelector(".chatSuggestions")?.remove();
- 
+
     appendUserBubble(chatEl, message);
     input.value = "";
     chatEl.scrollTop = chatEl.scrollHeight;
- 
+
     const typingWrap = createTypingIndicator();
     chatEl.appendChild(typingWrap);
     chatEl.scrollTop = chatEl.scrollHeight;
     const botMsgEl = typingWrap.querySelector(".botMsg") || typingWrap.querySelector(".bubble--bot");
- 
+
     const messages = [
         { role: "system", content: buildSystemPrompt() },
         ...chatHistory,
         { role: "user", content: message }
     ];
- 
+
     let reply = null;
- 
-    // Race the first 2 models — use whichever responds first
+
     const tryModel = (model) => fetch(OPENROUTER_URL, {
         method: "POST",
         headers: {
@@ -618,10 +598,10 @@ async function sendMessage() {
         body: JSON.stringify({
             model,
             messages,
-            max_tokens:  350,    // shorter = faster
+            max_tokens:  350,
             temperature: 0.80,
         }),
-        signal: AbortSignal.timeout(12000)  // 12s timeout per model
+        signal: AbortSignal.timeout(12000)
     }).then(async r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const d = await r.json();
@@ -629,8 +609,7 @@ async function sendMessage() {
         if (!c) throw new Error("empty");
         return c;
     });
- 
-    // Try models sequentially with short timeout
+
     for (const model of CHAT_MODELS) {
         try {
             reply = await tryModel(model);
@@ -640,7 +619,7 @@ async function sendMessage() {
             continue;
         }
     }
- 
+
     if (!reply) {
         if (botMsgEl) {
             botMsgEl.classList.remove("typing");
@@ -649,24 +628,23 @@ async function sendMessage() {
         chatEl.scrollTop = chatEl.scrollHeight;
         return;
     }
- 
+
     const { reply: cleanReply, reminder } = parseReminderTag(reply);
     if (botMsgEl) {
         botMsgEl.classList.remove("typing");
         renderBotText(botMsgEl, cleanReply);
     }
- 
+
     chatHistory.push({ role: "user",      content: message    });
     chatHistory.push({ role: "assistant", content: cleanReply });
     if (chatHistory.length > 30) chatHistory = chatHistory.slice(-30);
- 
+
     if (reminder) {
         await saveReminderToBackend(reminder);
         showReminderToast(reminder);
     }
     chatEl.scrollTop = chatEl.scrollHeight;
 }
-
 
 function parseReminderTag(text) {
     const match = text.match(/\[REMINDER:\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(\d{2}:\d{2})\s*\]/i);
@@ -688,8 +666,6 @@ async function saveReminderToBackend(reminder) {
         });
     } catch(e) {}
 }
-
-// ── Chat bubble builders ──────────────────────────────────
 
 function appendUserBubble(chatEl, message) {
     const w = document.createElement("div");
@@ -774,7 +750,7 @@ function getTaskEmoji(taskText, type) {
 }
 
 let calendarTasks    = [];
-let selectedCalDate  = null;  // ISO date string of selected calendar day
+let selectedCalDate  = null;
 
 async function buildCalStrip() {
     const strip = document.getElementById("calStrip");
@@ -791,7 +767,6 @@ async function buildCalStrip() {
 
     const localMeta = JSON.parse(localStorage.getItem("taskMeta") || "{}");
 
-    // Show 14 days: 2 past + today + 11 ahead
     for (let i = -2; i <= 11; i++) {
         const d       = new Date(today);
         d.setDate(today.getDate() + i);
@@ -826,11 +801,9 @@ async function buildCalStrip() {
 
 function selectCalDay(dateStr) {
     selectedCalDate = dateStr;
-    // Update selected style
     document.querySelectorAll(".calCell").forEach(c => {
         c.classList.toggle("calSelected", c.dataset.date === dateStr);
     });
-    // Show tasks for that day
     renderDayDetail(dateStr);
 }
 
@@ -932,7 +905,6 @@ async function saveTask() {
             document.getElementById("pinTask").checked  = false;
             closeAddTask();
             await loadPlanner();
-            // Re-select the date if we added from day detail
             if (date && selectedCalDate === date) renderDayDetail(date);
         } else {
             alert(data.message || "Could not save. Please log in.");
@@ -955,7 +927,6 @@ async function loadPlanner() {
     todayList.innerHTML = upcomingList.innerHTML = completedList.innerHTML = "";
     if (pinnedList) pinnedList.innerHTML = "";
 
-    // Hide day detail panel until a day is tapped
     const panel = document.getElementById("dayDetailPanel");
     if (panel) panel.style.display = "none";
     selectedCalDate = null;
@@ -967,7 +938,6 @@ async function loadPlanner() {
         const now   = new Date(); now.setHours(0,0,0,0);
         let hasPinned = false;
 
-        // Sort: overdue first, then today, then upcoming
         const tasks = data.tasks || [];
 
         tasks.forEach(task => {
@@ -1014,7 +984,6 @@ function buildPlannerCard(task, meta) {
     const typeIcon = {task:"📋", event:"🎉", reminder:"🔔"}[meta.type || "task"];
     const hiPri    = task.priority === "high";
 
-    // Status dot colour
     let dotColor = "";
     if (!done && task.date) {
         const today = new Date(); today.setHours(0,0,0,0);
@@ -1026,7 +995,6 @@ function buildPlannerCard(task, meta) {
         ? `<span style="width:7px;height:7px;border-radius:50%;background:${dotColor};flex-shrink:0;"></span>`
         : "";
 
-    // Format date nicely
     let dateLabel = "";
     if (task.date) {
         const d = new Date(task.date + "T00:00:00");
@@ -1078,6 +1046,8 @@ async function toggleTask(id) {
     await fetch("/reminder/" + id + "/toggle", {method:"POST"});
     loadPlanner();
 }
+
+
 /* ─────────────────────────────────────────────────────────
    9. WATER
 ───────────────────────────────────────────────────────── */
@@ -1139,15 +1109,11 @@ function openWaterTarget()   { document.getElementById("waterTargetModal").style
 function closeWaterTarget(e) { if(!e||e.target.classList.contains("modalOverlay")) document.getElementById("waterTargetModal").style.display="none"; }
 function saveWaterTarget()   { const v=parseInt(document.getElementById("waterTargetInput").value); if(v>0&&v<=20){waterTarget=v;localStorage.setItem("waterTarget",v);} closeWaterTarget(); loadWaterScreen(); renderHomeWaterDrops(); safe("drawerWaterGoal",el=>el.innerText=`${waterTarget} glasses per day`); }
 
-
-
 function renderWaterTip() {
     const el = document.getElementById("homeWaterTip");
     if (!el) return;
-    if (typeof AhiraContent !== "undefined") {
-        el.innerText = "💡 " + AhiraContent.sessionWater();
-        el.style.display = "block";
-    }
+    el.innerText = "💡 " + AhiraContent.sessionWater();
+    el.style.display = "block";
 }
 
 
@@ -1155,26 +1121,23 @@ function renderWaterTip() {
    10. PERIOD
 ───────────────────────────────────────────────────────── */
 
- 
 function setPeriodDate() {
-    // Open the native date picker via a hidden input
     let picker = document.getElementById("_periodDatePicker");
     if (!picker) {
         picker = document.createElement("input");
         picker.type = "date";
         picker.id   = "_periodDatePicker";
         picker.style.cssText = "position:fixed;opacity:0;pointer-events:none;top:50%;left:50%;";
-        picker.max = new Date().toISOString().slice(0, 10); // can't be future
+        picker.max = new Date().toISOString().slice(0, 10);
         document.body.appendChild(picker);
- 
+
         picker.addEventListener("change", () => {
             const val = picker.value;
             if (!val) return;
             lastPeriodDate = new Date(val + "T00:00:00");
             localStorage.setItem("lastPeriodDate", val);
             calculatePeriod();
- 
-            // Show confirmation toast
+
             const toast = document.createElement("div");
             toast.style.cssText = "position:fixed;bottom:120px;left:50%;transform:translateX(-50%);background:#6C3FCE;color:white;padding:10px 20px;border-radius:20px;font-size:13px;font-weight:600;z-index:9999;opacity:0;transition:opacity 0.3s;white-space:nowrap;";
             toast.innerText = "✅ Period date saved!";
@@ -1189,31 +1152,26 @@ function setPeriodDate() {
     picker.showPicker ? picker.showPicker() : picker.click();
 }
 
-
 function calculatePeriod() {
     if (!lastPeriodDate) {
-        // Show "Set date" state
         safe("periodBigLabel",  el => el.innerText = "Tap 'Update Date' to begin tracking");
         safe("periodDateLabel", el => el.innerText  = "No period date set yet");
         safe("wellPeriodSub",   el => el.innerText  = "Tap to set your last period date");
         ["periodDays","periodDaysDetail","periodDaysBig"].forEach(id => safe(id, el => el.innerText = "--"));
         return;
     }
- 
+
     const today     = new Date();
     today.setHours(0, 0, 0, 0);
     const start     = new Date(lastPeriodDate);
     start.setHours(0, 0, 0, 0);
- 
+
     const daysSince = Math.floor((today - start) / (1000 * 60 * 60 * 24));
     const cycle     = 28;
- 
-    // Where in the current cycle are we?
-    const dayInCycle = daysSince % cycle;          // 0–27
-    const remaining  = cycle - dayInCycle;          // days until next period
-    const progress   = (dayInCycle / cycle) * 100; // % through cycle
- 
-    // Determine current phase
+    const dayInCycle = daysSince % cycle;
+    const remaining  = cycle - dayInCycle;
+    const progress   = (dayInCycle / cycle) * 100;
+
     let phase = "";
     let phaseEmoji = "";
     if (dayInCycle <= 5) {
@@ -1225,31 +1183,26 @@ function calculatePeriod() {
     } else {
         phase = "Luteal Phase"; phaseEmoji = "🌙";
     }
- 
-    // Next period date
+
     const nextDate = new Date(start);
     nextDate.setDate(start.getDate() + daysSince + remaining);
     const nextDateStr = nextDate.toLocaleDateString("en-IN", {
         day: "numeric", month: "long", year: "numeric"
     });
- 
-    // Update all UI elements
+
     ["periodDays","periodDaysDetail","periodDaysBig"].forEach(id =>
         safe(id, el => el.innerText = remaining)
     );
     ["periodFill","periodFillWell","periodFillDetail"].forEach(id =>
         safe(id, el => el.style.width = progress + "%")
     );
- 
+
     safe("periodBigLabel",  el => el.innerText = `Next Period in ${remaining} Day${remaining !== 1 ? "s" : ""}`);
     safe("periodDateLabel", el => el.innerText  = `📅 Expected: ${nextDateStr}`);
     safe("wellPeriodSub",   el => el.innerText  = `Next in ${remaining} days · ${phaseEmoji} ${phase}`);
- 
-    // Cycle phase label if element exists
     safe("currentPhaseLabel", el => el.innerText = `${phaseEmoji} ${phase}`);
     safe("dayInCycleLabel",   el => el.innerText = `Day ${dayInCycle + 1} of ${cycle}`);
- 
-    // Home screen dots
+
     const dc = document.getElementById("homePeriodDots");
     if (dc) {
         dc.innerHTML = "";
@@ -1262,14 +1215,12 @@ function calculatePeriod() {
     }
 }
 
-
 function renderPeriodTip() {
     const el = document.getElementById("periodTipText");
     if (!el) return;
-    if (typeof AhiraContent !== "undefined") {
-        el.innerText = AhiraContent.sessionPeriod();
-    }
+    el.innerText = AhiraContent.sessionPeriod();
 }
+
 
 /* ─────────────────────────────────────────────────────────
    11. MEDICINE
@@ -1355,29 +1306,18 @@ function filterGrocery(type,btn) { currentGroceryFilter=type; document.querySele
 
 
 /* ─────────────────────────────────────────────────────────
-   13. WELLNESS LOADER
+   13. WELLNESS LOADER — FIXED (removed missing element refs)
 ───────────────────────────────────────────────────────── */
 
- 
 function loadWellnessScreen() {
     calculatePeriod();
     renderHomeWaterDrops();
     loadMedicines();
     loadGrocery();
- 
-    // Rotate wellness tip on every load (uses AhiraContent if available)
-    const tipEl = document.getElementById("wellnessDailyTip");
-    if (tipEl && typeof AhiraContent !== "undefined") {
-        tipEl.innerText = AhiraContent.randomWaterTip();
-    }
- 
-    // Rotate period tip on every load
-    const periodTipEl = document.getElementById("wellnessPeriodTip");
-    if (periodTipEl && typeof AhiraContent !== "undefined") {
-        periodTipEl.innerText = "💡 " + AhiraContent.randomPeriodTip();
-    }
+    // Note: wellnessDailyTip and wellnessPeriodTip IDs do not exist
+    // in index.html, so we skip them to avoid silent errors.
 }
- 
+
 
 /* ─────────────────────────────────────────────────────────
    14. MOOD CHECKER
@@ -1441,33 +1381,28 @@ function selectMood(btn, mood, emoji) {
    15. INIT
 ───────────────────────────────────────────────────────── */
 
-
-
-/* ── 5. REPLACE window.onload (at very bottom of chat.js) ─ */
- 
 window.onload = function() {
+    // Hide everything initially
     document.getElementById("authLogo").style.display    = "none";
     document.getElementById("authWrapper").style.display = "none";
     document.getElementById("appWrapper").style.display  = "none";
-    document.querySelectorAll(".appScreen").forEach(s => s.classList.remove("active"));
- 
-    // Intercept browser back button — go home instead of closing
+    // All appScreens already have style="display:none" in HTML — leave them
+
+    // Intercept browser back button
     window.history.pushState({ screen: "homeScreen" }, "", "");
     window.addEventListener("popstate", (e) => {
         const appVisible = document.getElementById("appWrapper").style.display !== "none";
-        if (!appVisible) return; // auth screen — let it close
- 
-        // If not on home, go home
+        if (!appVisible) return;
+
         const home = document.getElementById("homeScreen");
         if (home && !home.classList.contains("active")) {
             navApp("homeScreen", document.querySelector(".navItem"));
             window.history.pushState({ screen: "homeScreen" }, "", "");
         } else {
-            // Already on home — push state again to prevent close
             window.history.pushState({ screen: "homeScreen" }, "", "");
         }
     });
- 
+
     if (typeof AhiraSplash !== "undefined") AhiraSplash.init(2600);
     checkSession();
 };
