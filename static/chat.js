@@ -356,7 +356,21 @@ function enterApp() {
 function openDrawer() {
     document.getElementById("profileDrawer").classList.add("open");
     document.getElementById("drawerOverlay").classList.add("open");
-    safe("drawerWaterGoal", el => el.innerText = `${waterTarget} glasses per day`);
+    // Update dynamic labels
+    safe("drawerWaterGoal",  el => el.innerText = `${waterTarget} glasses per day`);
+    safe("drawerProfileSub", el => el.innerText = currentUser ? currentUser.email : "Name and email");
+    const cl = parseInt(localStorage.getItem("cycleLength")) || 28;
+    const pd = localStorage.getItem("lastPeriodDate");
+    safe("drawerPeriodSub",  el => el.innerText = pd ? `${cl}-day cycle · Set` : `${cl}-day cycle · Not set`);
+    // Sync all toggle states from localStorage
+    const settings = JSON.parse(localStorage.getItem("ahiraSettings") || "{}");
+    ["toggleReminders","toggleWater","toggleMedicine","togglePeriod","toggleQuotes"].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const key = id.replace("toggle","").toLowerCase();
+        const val = settings[key] !== false; // default ON
+        val ? el.classList.add("on") : el.classList.remove("on");
+    });
 }
 
 function closeDrawer() {
@@ -364,8 +378,161 @@ function closeDrawer() {
     document.getElementById("drawerOverlay").classList.remove("open");
 }
 
+// ── Universal modal helper ─────────────────────────────────
+function closeModal(id, e) {
+    if (!e || e.target.classList.contains("modalOverlay")) {
+        const m = document.getElementById(id);
+        if (m) m.style.display = "none";
+    }
+}
+
+// ── Quick toast ────────────────────────────────────────────
+function showQuickToast(msg) {
+    const existing = document.getElementById("_quickToast");
+    if (existing) existing.remove();
+    const t = document.createElement("div");
+    t.id = "_quickToast";
+    t.style.cssText = "position:fixed;bottom:90px;left:50%;transform:translateX(-50%) translateY(20px);background:#1A0A3C;color:#fff;padding:10px 22px;border-radius:24px;font-size:13px;font-weight:600;z-index:9999;opacity:0;transition:all 0.28s;white-space:nowrap;box-shadow:0 4px 20px rgba(0,0,0,0.25);pointer-events:none;";
+    t.innerText = msg;
+    document.body.appendChild(t);
+    requestAnimationFrame(() => { t.style.opacity = "1"; t.style.transform = "translateX(-50%) translateY(0)"; });
+    setTimeout(() => {
+        t.style.opacity = "0"; t.style.transform = "translateX(-50%) translateY(10px)";
+        setTimeout(() => t.remove(), 300);
+    }, 2000);
+}
+
+// ── Edit Profile ───────────────────────────────────────────
+function openEditProfile() {
+    closeDrawer();
+    const modal = document.getElementById("editProfileModal");
+    if (!modal) return;
+    const nameEl  = document.getElementById("editNameInput");
+    const emailEl = document.getElementById("editEmailInput");
+    if (nameEl  && currentUser) nameEl.value  = currentUser.name  || "";
+    if (emailEl && currentUser) emailEl.value = currentUser.email || "";
+    const msg = document.getElementById("editProfileMsg");
+    if (msg) msg.style.display = "none";
+    modal.style.display = "flex";
+}
+
+function saveProfile() {
+    const name = document.getElementById("editNameInput")?.value.trim();
+    if (!name || name.length < 2) {
+        const msg = document.getElementById("editProfileMsg");
+        if (msg) { msg.style.cssText = "display:block;background:rgba(248,113,113,0.1);color:#991b1b;border:1px solid rgba(248,113,113,0.3);padding:10px 14px;border-radius:10px;font-size:13px;margin-top:8px;"; msg.innerText = "Name must be at least 2 characters."; }
+        return;
+    }
+    if (currentUser) currentUser.name = name;
+    // Update UI everywhere
+    safe("drawerName",   el => el.innerText = name);
+    safe("drawerAvatar", el => el.innerText = name.charAt(0).toUpperCase());
+    const pb = document.getElementById("profileBtn");
+    if (pb) pb.innerText = name.charAt(0).toUpperCase();
+    const hr = new Date().getHours();
+    const tg = hr < 12 ? "Good morning" : hr < 17 ? "Good afternoon" : "Good evening";
+    safe("homeGreeting", el => el.innerText = `${tg}, ${name} 💜`);
+    closeModal("editProfileModal");
+    showQuickToast("Profile updated ✅");
+}
+
+// ── Period Settings ────────────────────────────────────────
+function openPeriodSettings() {
+    closeDrawer();
+    const modal = document.getElementById("periodSettingsModal");
+    if (!modal) return;
+    // Pre-fill current values
+    const saved = localStorage.getItem("lastPeriodDate");
+    const cl    = localStorage.getItem("cycleLength") || "28";
+    const startEl  = document.getElementById("periodStartInput");
+    const lengthEl = document.getElementById("cycleLengthInput");
+    if (startEl)  startEl.value  = saved || "";
+    if (lengthEl) lengthEl.value = cl;
+    modal.style.display = "flex";
+}
+
+function savePeriodSettings() {
+    const startVal  = document.getElementById("periodStartInput")?.value;
+    const lengthVal = parseInt(document.getElementById("cycleLengthInput")?.value);
+    if (startVal) {
+        lastPeriodDate = new Date(startVal + "T00:00:00");
+        localStorage.setItem("lastPeriodDate", startVal);
+    }
+    if (lengthVal >= 21 && lengthVal <= 45) {
+        localStorage.setItem("cycleLength", lengthVal);
+    }
+    closeModal("periodSettingsModal");
+    calculatePeriod();
+    showQuickToast("Period settings saved 🌸");
+}
+
+// ── About ──────────────────────────────────────────────────
+function openAbout() {
+    closeDrawer();
+    const modal = document.getElementById("aboutModal");
+    if (modal) modal.style.display = "flex";
+}
+
+// ── Dynamic cycle insights ─────────────────────────────────
+function renderCycleInsights(phase, dayInCycle, cycle) {
+    const container = document.getElementById("cycleInsightsList");
+    if (!container) return;
+    // Phase-specific tips
+    const PHASE_INSIGHTS = {
+        "Menstrual Phase":  [
+            { color: "#ffb3c6", text: "Rest as much as possible — your body is working hard." },
+            { color: "#f9a8d4", text: _pick(_PERIOD_TIPS) },
+            { color: "#fca5a5", text: "Iron-rich foods help replace what you lose during bleeding." },
+        ],
+        "Follicular Phase": [
+            { color: "#93c5fd", text: "Energy is rising — great time to start new projects." },
+            { color: "#a5f3fc", text: _pick(_PERIOD_TIPS) },
+            { color: "#6ee7b7", text: "Estrogen rising means focus and creativity are at their peak." },
+        ],
+        "Ovulation Phase":  [
+            { color: "#fde68a", text: "You're at peak energy and sociability today." },
+            { color: "#fed7aa", text: _pick(_PERIOD_TIPS) },
+            { color: "#fca5a5", text: "Great day for important conversations and social plans." },
+        ],
+        "Luteal Phase":     [
+            { color: "#c4b5fd", text: "Progesterone rising — be gentle with yourself." },
+            { color: "#ddd6fe", text: _pick(_PERIOD_TIPS) },
+            { color: "#fbcfe8", text: "Cravings and mood shifts are normal — honour them." },
+        ],
+    };
+    const tips = PHASE_INSIGHTS[phase] || PHASE_INSIGHTS["Menstrual Phase"];
+    container.innerHTML = tips.map(t =>
+        `<div class="insightItem"><span class="insightDot" style="background:${t.color};"></span>${t.text}</div>`
+    ).join("");
+}
+
+// ── Dynamic hydration tips ─────────────────────────────────
+function renderHydrationTips() {
+    const container = document.getElementById("hydrationTipsList");
+    if (!container) return;
+    // Pick 4 random tips fresh every time
+    const pool   = [..._WATER_TIPS];
+    const picked = [];
+    while (picked.length < 4 && pool.length > 0) {
+        const idx = Math.floor(Math.random() * pool.length);
+        picked.push(pool.splice(idx, 1)[0]);
+    }
+    const emojis = ["🌅","💧","🍋","🥗","🍉","🌿","⏰","🫗"];
+    container.innerHTML = picked.map((tip, i) =>
+        `<div class="tipItem">${emojis[i % emojis.length]} ${tip}</div>`
+    ).join("");
+}
+
 function toggleSetting(btn) {
     btn.classList.toggle("on");
+    const isOn = btn.classList.contains("on");
+    const key  = btn.id.replace("toggle","").toLowerCase();
+    const settings = JSON.parse(localStorage.getItem("ahiraSettings") || "{}");
+    settings[key] = isOn;
+    localStorage.setItem("ahiraSettings", JSON.stringify(settings));
+    // Show brief feedback
+    const labels = {reminders:"Reminder Alerts",water:"Water Reminders",medicine:"Medicine Reminders",period:"Period Alerts",quotes:"Daily Quotes"};
+    showQuickToast(`${labels[key]||key} ${isOn?"enabled ✅":"disabled"}`);
 }
 
 
@@ -1060,7 +1227,15 @@ function renderHomeWaterDrops() {
     localStorage.setItem("water",water);
 }
 
-function loadWaterScreen() { renderWaterRing(); renderWaterGlassGrid(); renderWaterLog(); renderWaterChart(); safe("waterTargetLabel",el=>el.innerText=waterTarget); safe("waterMlLabel",el=>el.innerText=(water*250)+" ml"); }
+function loadWaterScreen() {
+    renderWaterRing();
+    renderWaterGlassGrid();
+    renderWaterLog();
+    renderWaterChart();
+    safe("waterTargetLabel", el => el.innerText = waterTarget);
+    safe("waterMlLabel",     el => el.innerText = (water * 250) + " ml");
+    renderHydrationTips();
+}
 
 function renderWaterRing() {
     safe("detailWaterCount",el=>el.innerText=water);
@@ -1167,7 +1342,7 @@ function calculatePeriod() {
     start.setHours(0, 0, 0, 0);
 
     const daysSince = Math.floor((today - start) / (1000 * 60 * 60 * 24));
-    const cycle     = 28;
+    const cycle     = parseInt(localStorage.getItem("cycleLength")) || 28;
     const dayInCycle = daysSince % cycle;
     const remaining  = cycle - dayInCycle;
     const progress   = (dayInCycle / cycle) * 100;
@@ -1202,6 +1377,14 @@ function calculatePeriod() {
     safe("wellPeriodSub",   el => el.innerText  = `Next in ${remaining} days · ${phaseEmoji} ${phase}`);
     safe("currentPhaseLabel", el => el.innerText = `${phaseEmoji} ${phase}`);
     safe("dayInCycleLabel",   el => el.innerText = `Day ${dayInCycle + 1} of ${cycle}`);
+    safe("cycleInfoLength",    el => el.innerText = `${cycle} days`);
+    safe("cycleInfoOvulation", el => el.innerText = `Day ${Math.round(cycle / 2)}`);
+    renderCycleInsights(phase, dayInCycle, cycle);
+    // Update Cycle Info card
+    safe("cycleInfoLength", el => el.innerText = `${cycle} days`);
+    safe("cycleInfoOvulation", el => el.innerText = `Day ${Math.round(cycle / 2)}`);
+    // Render dynamic cycle insights
+    renderCycleInsights(phase, dayInCycle, cycle);
 
     const dc = document.getElementById("homePeriodDots");
     if (dc) {
@@ -1314,8 +1497,6 @@ function loadWellnessScreen() {
     renderHomeWaterDrops();
     loadMedicines();
     loadGrocery();
-    // Note: wellnessDailyTip and wellnessPeriodTip IDs do not exist
-    // in index.html, so we skip them to avoid silent errors.
 }
 
 
