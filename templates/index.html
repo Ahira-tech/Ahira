@@ -382,15 +382,15 @@
                 </div>
                 <div class="cardSoft">
                     <div class="cardHeader">Cycle Info</div>
-                    <div class="infoRow"><span>Cycle Length</span><b>28 days</b></div>
+                    <div class="infoRow"><span>Cycle Length</span><b id="cycleInfoLength">28 days</b></div>
                     <div class="infoRow"><span>Next Period</span><b><span id="periodDaysDetail">--</span> days</b></div>
-                    <div class="infoRow"><span>Ovulation</span><b>Day 14</b></div>
+                    <div class="infoRow"><span>Ovulation</span><b id="cycleInfoOvulation">Day 14</b></div>
                 </div>
                 <div class="cardSoft">
                     <div class="cardHeader" style="margin-bottom:8px;">Cycle Insights</div>
-                    <div class="insightItem"><span class="insightDot" style="background:#ffb3c6;"></span>Prepare for PMS symptoms &amp; cravings</div>
-                    <div class="insightItem"><span class="insightDot" style="background:#93c5fd;"></span>Stay hydrated during this time</div>
-                    <div class="insightItem"><span class="insightDot" style="background:#d1d5db;"></span>Use heating pad for cramps</div>
+                    <div id="cycleInsightsList">
+                        <div class="insightItem"><span class="insightDot" style="background:#ffb3c6;"></span>Loading tip...</div>
+                    </div>
                 </div>
                 <div class="cardSoft">
                     <div class="cardHeader" style="margin-bottom:10px;">Cycle Timeline</div>
@@ -507,10 +507,9 @@
                 </div>
                 <div class="cardSoft" style="margin-top:12px;">
                     <div class="cardHeader" style="margin-bottom:8px;">💡 Hydration Tips</div>
-                    <div class="tipItem">🌅 Start your morning with a full glass of water</div>
-                    <div class="tipItem">🍋 Add lemon slices for extra hydration</div>
-                    <div class="tipItem">🔔 Set alarms every 2 hours as reminders</div>
-                    <div class="tipItem">🥗 Eat water-rich foods like cucumber &amp; melon</div>
+                    <div id="hydrationTipsList">
+                        <div class="tipItem">Loading tips...</div>
+                    </div>
                 </div>
                 <div id="waterTargetModal" class="modalOverlay" style="display:none;" onclick="closeWaterTarget(event)">
                     <div class="modalCard" onclick="event.stopPropagation()">
@@ -632,15 +631,15 @@
             <div class="drawerBody">
 
                 <div class="drawerSectionTitle">Account</div>
-                <div class="drawerItem">
+                <div class="drawerItem" onclick="openEditProfile()">
                     <div class="drawerItemIcon" style="background:rgba(138,108,255,0.1);">👤</div>
-                    <div class="drawerItemText"><div class="drawerItemLabel">Edit Profile</div><div class="drawerItemSub">Name and email</div></div>
+                    <div class="drawerItemText"><div class="drawerItemLabel">Edit Profile</div><div class="drawerItemSub" id="drawerProfileSub">Name and email</div></div>
                     <span class="drawerItemArrow">›</span>
                 </div>
-                <div class="drawerItem">
+                <div class="drawerItem" onclick="openPeriodSettings()">
                     <div class="drawerItemIcon" style="background:rgba(255,182,193,0.2);">🌸</div>
-                    <div class="drawerItemText"><div class="drawerItemLabel">Period Settings</div><div class="drawerItemSub">Cycle length, start date</div></div>
-                    <span class="drawerItemArrow" onclick="navApp('periodScreen');closeDrawer()">›</span>
+                    <div class="drawerItemText"><div class="drawerItemLabel">Period Settings</div><div class="drawerItemSub" id="drawerPeriodSub">Cycle length, start date</div></div>
+                    <span class="drawerItemArrow">›</span>
                 </div>
 
                 <div class="drawerDivider"></div>
@@ -673,7 +672,7 @@
                 <div class="drawerItem">
                     <div class="drawerItemIcon" style="background:rgba(167,243,208,0.2);">🎯</div>
                     <div class="drawerItemText"><div class="drawerItemLabel">Daily Water Goal</div><div class="drawerItemSub" id="drawerWaterGoal">8 glasses per day</div></div>
-                    <span class="drawerItemArrow" onclick="navApp('waterScreen');closeDrawer();openWaterTarget()">›</span>
+                    <span class="drawerItemArrow" onclick="closeDrawer();navApp('waterScreen',null);setTimeout(openWaterTarget,350)">›</span>
                 </div>
                 <div class="drawerItem">
                     <div class="drawerItemIcon" style="background:rgba(252,211,77,0.15);">✨</div>
@@ -684,7 +683,7 @@
                 <div class="drawerDivider"></div>
 
                 <div class="drawerSectionTitle">About</div>
-                <div class="drawerItem">
+                <div class="drawerItem" onclick="openAbout()">
                     <div class="drawerItemIcon" style="background:rgba(138,108,255,0.1);">💜</div>
                     <div class="drawerItemText"><div class="drawerItemLabel">About Ahira</div><div class="drawerItemSub">Version 1.0 · Always by your side</div></div>
                     <span class="drawerItemArrow">›</span>
@@ -703,5 +702,68 @@
 
 <script src="/static/chat.js"></script>
 <script src="/static/splash.js"></script>
+
+<!-- ══ EDIT PROFILE MODAL ══════════════════════════════ -->
+<div id="editProfileModal" class="modalOverlay" style="display:none;" onclick="closeModal('editProfileModal',event)">
+    <div class="modalCard" onclick="event.stopPropagation()">
+        <div class="modalTitle">✏️ Edit Profile</div>
+        <div class="formGroup">
+            <div class="formLabel">Your Name</div>
+            <input id="editNameInput" class="formInput" type="text" placeholder="Enter your name">
+        </div>
+        <div class="formGroup">
+            <div class="formLabel">Email</div>
+            <input id="editEmailInput" class="formInput" type="email" placeholder="your@email.com" disabled
+                style="opacity:0.5;cursor:not-allowed;background:rgba(0,0,0,0.04);">
+            <p style="font-size:11px;color:var(--t3);margin-top:4px;">Email cannot be changed after registration</p>
+        </div>
+        <div id="editProfileMsg" style="display:none;padding:10px 14px;border-radius:10px;font-size:13px;margin-top:8px;"></div>
+        <div class="btnGroup" style="margin-top:16px;">
+            <button class="actionBtn" onclick="saveProfile()">Save Changes</button>
+            <button class="secondaryBtn" onclick="closeModal('editProfileModal')">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<!-- ══ PERIOD SETTINGS MODAL ════════════════════════════ -->
+<div id="periodSettingsModal" class="modalOverlay" style="display:none;" onclick="closeModal('periodSettingsModal',event)">
+    <div class="modalCard" onclick="event.stopPropagation()">
+        <div class="modalTitle">🌸 Period Settings</div>
+        <div class="formGroup">
+            <div class="formLabel">Last Period Start Date</div>
+            <input id="periodStartInput" class="formInput" type="date">
+            <p style="font-size:11px;color:var(--t3);margin-top:4px;">The first day of your most recent period</p>
+        </div>
+        <div class="formGroup">
+            <div class="formLabel">Cycle Length (days)</div>
+            <input id="cycleLengthInput" class="formInput" type="number" min="21" max="45" placeholder="28">
+            <p style="font-size:11px;color:var(--t3);margin-top:4px;">Typical range: 21–35 days</p>
+        </div>
+        <div class="btnGroup" style="margin-top:16px;">
+            <button class="actionBtn" onclick="savePeriodSettings()">Save Settings</button>
+            <button class="secondaryBtn" onclick="closeModal('periodSettingsModal')">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<!-- ══ ABOUT MODAL ═══════════════════════════════════════ -->
+<div id="aboutModal" class="modalOverlay" style="display:none;" onclick="closeModal('aboutModal',event)">
+    <div class="modalCard" onclick="event.stopPropagation()" style="text-align:center;padding-bottom:32px;">
+        <img src="/static/images/logo.png" style="width:72px;margin:0 auto 14px;display:block;filter:drop-shadow(0 4px 16px rgba(108,63,206,0.35));">
+        <div class="modalTitle" style="text-align:center;">Ahira</div>
+        <p style="font-size:13px;color:var(--t3);margin-bottom:20px;">Version 1.0 · Always by your side 💜</p>
+        <div style="background:linear-gradient(135deg,rgba(108,63,206,0.08),rgba(244,114,182,0.06));border-radius:16px;padding:18px;text-align:left;font-size:13px;color:var(--t2);line-height:2;">
+            <div>💜 &nbsp;AI companion built for women</div>
+            <div>🌸 &nbsp;Period &amp; cycle tracking</div>
+            <div>📅 &nbsp;Smart planner &amp; reminders</div>
+            <div>💊 &nbsp;Medicine &amp; grocery manager</div>
+            <div>💧 &nbsp;Daily hydration tracker</div>
+            <div>😊 &nbsp;Mood &amp; wellness insights</div>
+        </div>
+        <p style="margin-top:14px;font-size:12px;color:var(--t4);">Made with love, for every woman 🌷</p>
+        <button class="actionBtn" style="margin-top:16px;" onclick="closeModal('aboutModal')">Close</button>
+    </div>
+</div>
+
 </body>
 </html>
