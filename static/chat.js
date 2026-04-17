@@ -4,13 +4,26 @@
 
 
 /* ─────────────────────────────────────────────────────────
-   1. CONTENT LIBRARY — quotes, tips, welcome lines
-   All content is inlined here so no external file needed.
+   1. DAILY QUOTES
 ───────────────────────────────────────────────────────── */
 
-const AHIRA_QUOTES = [
+const QUOTES = [
+    "You are stronger than you think, braver than you feel, and more loved than you know. 💜",
+    "Take care of yourself the way you take care of everyone else. You deserve it.",
+    "Small steps every day still move you forward. Progress is progress. 🌸",
+    "Your feelings are valid. Rest is productive. And asking for help is brave.",
+    "Today doesn't have to be perfect. It just has to be yours. ✨",
+    "Be gentle with yourself. You are a work in progress — and that's beautiful.",
+    "Nourish your body, rest your mind, and trust the journey you're on. 💜",
+    "You don't have to have it all together. Just keep going, one moment at a time.",
+    "The most important relationship you have is the one with yourself. 🌿",
+    "Celebrate the small wins. They're the foundation of the big ones. 🌟"
+];
+
+// ── Inline content (no external file needed) ──────────────
+const _QUOTES = [
     "You have survived every hard day so far. That's a 100% success rate. 💜",
-    "Strength doesn't always roar. Sometimes it's the quiet voice that says I'll try again tomorrow.",
+    "Strength doesn't always roar. Sometimes it's the quiet voice saying I'll try again tomorrow.",
     "You are not behind. You are on your own beautiful timeline.",
     "The fact that you're still here, still trying — that's extraordinary.",
     "Difficult roads often lead to the most breathtaking destinations.",
@@ -18,224 +31,131 @@ const AHIRA_QUOTES = [
     "Every setback is setting you up for a stronger comeback.",
     "You are braver than you believe, stronger than you seem, and more loved than you know.",
     "Growth is uncomfortable because you're expanding. Keep going.",
-    "The woman who fights for herself becomes unstoppable.",
     "You are worthy of love, rest, joy, and abundance — right now, as you are.",
     "Your worth is not measured by your productivity. You are enough by simply existing.",
     "Be as kind to yourself as you are to the people you love most.",
     "You don't need to earn rest. You are not a machine.",
-    "You are allowed to take up space — in rooms, in conversations, in life.",
     "Loving yourself is not selfish. It's the foundation of everything.",
     "You deserve the same compassion you so freely give to others.",
-    "Your body is not the problem. It's the home your soul lives in.",
-    "You are not too much. You've just been around people who couldn't hold your magnitude.",
-    "You are a masterpiece AND a work in progress — both at the same time.",
     "Healing is not linear. Some days you'll go backwards, and that's still healing.",
-    "Peace begins the moment you decide not to let anyone's opinion disturb your inner calm.",
     "You don't have to be okay all the time. Let yourself feel what is real.",
     "Give yourself permission to grieve, to rest, to start over.",
     "Letting go is not giving up. It's making room for what truly belongs.",
-    "The most powerful thing you can do is return to stillness.",
-    "Your nervous system deserves gentleness. Not everything needs a reaction.",
-    "Boundaries are not walls. They're the doors you choose who to let in through.",
-    "Healing happens in the quiet moments between the chaos.",
-    "You are allowed to outgrow people, places, and old versions of yourself.",
     "Start before you're ready. The perfect time is a myth.",
-    "You don't need motivation. You need commitment. Show up anyway.",
     "Small consistent steps beat occasional giant leaps every time.",
     "Your dreams are not too big. Your belief in yourself just needs to catch up.",
-    "The version of you that succeeds is the one who keeps going on the hardest days.",
     "Done is better than perfect. Ship it. Improve it. Keep moving.",
     "You are not lazy. You may be overwhelmed, burnt out, or in need of rest.",
-    "Every expert was once a beginner who refused to quit.",
-    "The goal is not to be perfect. The goal is to be real and keep trying.",
-    "Your future self is rooting for the decision you make right now.",
     "Happiness is not a destination. It's sprinkled in ordinary moments.",
     "You are allowed to feel joy — even when life is hard.",
     "Notice what makes you come alive. Do more of that.",
-    "Gratitude doesn't change the facts. It changes how you see them.",
-    "Today, find one thing that made you smile. That thing matters.",
-    "Joy is an act of resistance. Choose it when you can.",
     "The small moments are not small. They are the whole thing.",
-    "Appreciate the ordinary. One day it will be what you miss most.",
-    "You are surrounded by more beauty than you currently notice.",
     "Your mental health is not a luxury. It's a necessity.",
     "Asking for help is one of the most courageous things you can do.",
-    "It's okay to not be okay. And it's okay to get support for that.",
-    "Anxiety is not weakness. It's your nervous system working overtime.",
     "Rest is a mental health strategy. Not a reward.",
     "You are not broken. You are human, and humans have hard seasons.",
     "Your feelings are valid even when they're inconvenient.",
     "You deserve a mind that feels safe and a life that feels like home.",
-    "Surround yourself with people who make you feel seen, not compared.",
-    "The right people will love the real you — not the performance.",
-    "You are not responsible for managing other people's emotions.",
     "The relationship you have with yourself sets the tone for every other one.",
-    "Love yourself enough to walk away from what no longer serves your growth.",
-    "You deserve a love that doesn't require you to shrink yourself.",
     "Your body works tirelessly for you every single day. Thank it.",
     "Movement is medicine. Even a slow walk counts.",
     "Sleep is not laziness. It's when your body does its most important work.",
     "Taking care of your body is one of the highest forms of self-respect.",
-    "Rest when you're tired. Your body is always speaking. Learn to listen.",
-    "Your body is not ornamental. It's functional, powerful, and worthy of care.",
     "Wellness is not a size or a number. It's how alive you feel from the inside.",
-    "The life you want is on the other side of the fear you're avoiding.",
     "Change is not betrayal. It's evolution.",
     "You don't have to be fearless. Just act despite the fear.",
-    "Every version of you was necessary to build who you are today.",
     "The bravest thing you can do is begin again, quietly, without applause.",
     "Your past is not your future unless you live there.",
-    "You are not stuck. You are preparing. There's a difference.",
     "Courage is choosing honesty over comfort, growth over safety.",
-    "One small brave choice today creates the momentum for everything else.",
     "Not every chapter of your life is meant to be pretty. Some teach.",
     "You don't have to figure out the whole path. Just the next step.",
-    "Not everything requires a response. Silence is also an answer.",
-    "The things you resist most are often the things that will free you.",
-    "Most things that worry you never actually happen. Breathe.",
     "Comparison is the thief of joy and the enemy of progress.",
     "Your life is not a competition. Your only opponent is yesterday's version of you.",
-    "Some doors are closed because something better is being prepared.",
     "I am learning. I am growing. I am becoming.",
     "I choose peace over perfection today.",
     "I am worthy of the love I seek. It starts with me.",
-    "I release what I cannot control and trust what I cannot yet see.",
     "I am not my mistakes. I am what I choose to do next.",
     "I am doing the best I can with what I have right now.",
-    "I trust my body. I trust my instincts. I trust my timing.",
-    "I am allowed to rest. I am allowed to start again.",
     "There is incredible power in your intuition. Trust it.",
     "A woman who knows her worth changes the whole room.",
-    "You are cyclical, not broken. Your rhythms are your superpower.",
-    "Softness is not weakness. It takes great strength to stay tender in a hard world.",
-    "Your emotions are data, not drama. Let them inform you.",
-    "You were never meant to fit into a mould. You were built to break them.",
-    "The woman you are becoming will thank you for every boundary you set today.",
+    "Softness is not weakness. It takes strength to stay tender in a hard world.",
     "Your sensitivity is not a flaw. It's a form of intelligence.",
-    "You are allowed to be ambitious and gentle, fierce and soft, all at once.",
     "A woman who invests in herself builds something no one can take away.",
     "Today is a new page. What will you write?",
     "You woke up today. That already counts for something.",
     "Even on slow days, you are still moving forward.",
-    "Your effort today, however small, matters more than you know.",
-    "Give yourself credit for the things you've already done.",
     "It's okay if today is just maintenance. Showing up is enough.",
-    "You are allowed to have a quiet day without guilt.",
     "Every day you choose yourself is a victory.",
-    "The fact that you're trying is enough for today.",
-    "Tomorrow is always a fresh start. But so is right now.",
     "Like the moon, you go through phases. All of them are natural.",
-    "Some seasons are for doing. Some are for resting. Both are necessary.",
-    "You cannot bloom in every season. Rest is not failure.",
     "After every winter, spring finds a way through. So will you.",
-    "Your energy is cyclical. Work with it, not against it.",
     "Right now, in this moment, you are safe.",
-    "The present moment is the only place where life actually happens.",
     "Breathe. You don't have to solve everything today.",
     "One breath at a time. One step at a time. One day at a time.",
-    "Slow down. The best things in life don't require rushing.",
     "Be here. Not in yesterday's regret or tomorrow's worry.",
     "Stillness is not emptiness. It's where clarity lives.",
-    "You don't have to be busy to be valuable.",
-    "Notice this moment — it will not come again.",
     "Something good is coming — even if you can't see it yet.",
     "Your story is not over. Not even close.",
     "The best chapters of your life may not have been written yet.",
-    "Hope is not naive. It's the most radical act of courage.",
-    "Even in the darkest room, one small light changes everything.",
     "Hold on. Seasons change. So do circumstances.",
     "You have been in difficult places before and found your way through.",
-    "Things don't stay the same. This hard season will shift.",
     "Keep going. The view from the other side of this will be worth it.",
     "You are still here. And that means something beautiful is still possible.",
-    "Your life is not a problem to be solved. It's a journey to be lived.",
-    "The most important conversation you'll have today is with yourself.",
     "Imperfect action beats perfect inaction every single time.",
-    "You are not in competition with other women. Their success is not your failure.",
     "Your uniqueness is not a bug. It's the whole feature.",
-    "The version of you that your past self prayed for — she's here now.",
     "You've already done hard things. You'll do this too.",
-    "Every version of strength looks different. Yours is valid.",
-    "You are a whole person — not half of something waiting to be completed.",
-    "The softness in you is not something to apologise for.",
-    "You are allowed to outgrow the life that no longer fits.",
     "Your presence matters more than your perfection.",
-    "Take care of your inner world. The outer one will follow.",
-    "You are not waiting for your life to begin. It already has.",
-    "Be gentle with beginnings. All good things start slowly.",
-    "Your voice deserves to be heard — especially by yourself.",
     "You are not defined by your hardest moment.",
     "The courage it takes to keep showing up every day is real.",
     "You — exactly as you are — are enough. Always. 💜",
 ];
 
-const AHIRA_PERIOD_TIPS = [
+const _PERIOD_TIPS = [
     "A heating pad on your lower abdomen relaxes uterine muscles and eases cramps naturally.",
     "Gentle yoga poses like Child's Pose and Cat-Cow can reduce period cramps within minutes.",
     "A warm bath with Epsom salts helps relax pelvic muscles and soothes period pain.",
     "Light walking improves blood flow and triggers endorphins that act as natural painkillers.",
     "Ginger tea steeped in hot water is a powerful natural anti-inflammatory for cramps.",
     "Iron-rich foods like lentils, spinach, and red meat help replace iron lost during bleeding.",
-    "Vitamin C helps your body absorb iron — pair iron foods with lemon, orange, or tomato.",
     "Magnesium-rich foods like dark chocolate, almonds, and avocado reduce PMS symptoms.",
     "Omega-3 fatty acids in salmon, walnuts, and flaxseed reduce period pain inflammation.",
     "Reduce salt intake before your period to minimise bloating and water retention.",
-    "Avoid excessive sugar during your period — it spikes energy then crashes mood.",
     "Tracking your cycle for 3 months reveals your personal patterns, not just averages.",
     "A normal cycle is anywhere from 21 to 35 days — not just the textbook 28.",
-    "Your most productive energetic days are typically in the follicular phase (days 7–13).",
     "PMS affects up to 75% of menstruating people — you are not imagining it.",
-    "Reducing caffeine in the week before your period can significantly lower PMS anxiety.",
-    "B6 vitamin supplements can help reduce PMS mood symptoms like irritability.",
+    "Reducing caffeine the week before your period can significantly lower PMS anxiety.",
     "A consistent sleep schedule during the luteal phase dramatically improves PMS symptoms.",
     "Your cycle has four phases: menstrual, follicular, ovulatory, and luteal. Each feels different.",
     "Estrogen peaks around ovulation making you feel sociable, confident, and energised.",
     "Progesterone rises after ovulation making you feel more introspective and tired.",
-    "Your metabolism speeds up in the luteal phase — you genuinely need slightly more calories.",
     "Cortisol (stress hormone) disrupts your hormonal cycle more than almost anything else.",
-    "Irregular periods often signal stress, undereating, or overexercising.",
     "Chamomile tea has anti-inflammatory and antispasmodic effects on uterine muscles.",
-    "Wear breathable loose-fitting clothing during your period to reduce physical discomfort.",
-    "A menstrual cup holds 3x more than a tampon and can safely be worn up to 12 hours.",
-    "Hydration is extra important during your period — it reduces bloating and supports circulation.",
-    "Your pain tolerance is lower on days 1–2 due to prostaglandins — be extra gentle with yourself.",
     "Your period is not a weakness. It is evidence of extraordinary biological complexity.",
 ];
 
-const AHIRA_WATER_TIPS = [
+const _WATER_TIPS = [
     "Your body is about 60% water — hydration affects every single system.",
-    "Even mild dehydration (1–2%) impairs concentration, mood, and physical performance.",
+    "Even mild dehydration (1-2%) impairs concentration, mood, and physical performance.",
     "Water helps flush toxins through your kidneys — the body's natural filtration system.",
     "Proper hydration supports glowing skin more than most skincare products.",
     "Your brain is 73% water. Staying hydrated is literally feeding your brain.",
-    "The 8 glasses rule is a good start, but your needs depend on weight, activity, and climate.",
     "If your urine is pale yellow you're well hydrated. Dark yellow means drink more.",
-    "You need more water when you exercise, when it's hot, or when you're unwell.",
     "Start every morning with a full glass of water before coffee or food.",
     "Keep a water bottle visible on your desk — out of sight, out of mind really does apply.",
-    "Link water drinking to existing habits: after brushing teeth, before meals, after waking.",
     "Drink a glass of water before every meal — it also prevents overeating.",
     "Add fresh lemon or lime for a vitamin C boost and better taste.",
-    "Mint and cucumber water is refreshing and supports digestion.",
     "Coconut water is an excellent post-exercise hydrator with natural electrolytes.",
-    "Herbal teas like peppermint, chamomile, and rooibos count as hydration with added benefits.",
     "A headache is often the first sign your body sends when you're dehydrated.",
     "Fatigue that hits midday is frequently dehydration, not just tiredness.",
     "Difficulty concentrating? Drink a glass of water before reaching for caffeine.",
-    "Muscle cramps especially at night are often a sign of dehydration and low electrolytes.",
     "Mood changes and irritability are early symptoms of inadequate hydration.",
     "Constipation is frequently a hydration issue — water softens stool and aids digestion.",
-    "Electrolytes (sodium, potassium, magnesium) help water enter cells effectively.",
-    "Room temperature water is absorbed faster than ice-cold water.",
     "Sipping water throughout the day is more effective than drinking large amounts at once.",
     "Watermelon, strawberries, oranges, and spinach are excellent hydrating foods.",
-    "Alcohol is a diuretic — drink a glass of water for every alcoholic drink you have.",
     "Staying hydrated during your period reduces cramping and bloating significantly.",
-    "Green tea is hydrating AND contains antioxidants — a great water alternative.",
     "Hydration supports better sleep — but stop big drinks 2 hours before bed.",
 ];
 
-const AHIRA_WELCOME = [
+const _WELCOME = [
     "Welcome back 💜 I missed you",
     "Hey you — so glad you're here 🌸",
     "You showed up today. That matters. ✨",
@@ -250,46 +170,32 @@ const AHIRA_WELCOME = [
     "Soft landing, right here 🌿",
     "Your feelings are safe here 🤍",
     "New day, new energy — let's go ⚡",
-    "Showing up for yourself is brave 💜",
     "This is your space. Welcome home 🌸",
     "Whatever today holds, I'm with you 💛",
     "Take a breath. You've got this. 🌿",
     "You are seen. You are valued. You are here. 💜",
     "Today is a fresh page. Write something kind 🌷",
-    "You woke up and chose yourself. That's everything 💜",
-    "No judgment here — just warmth and care 🌸",
-    "Glad you're back. Let's make today count 💛",
-    "Your journey continues — and I'm walking with you ✨",
     "Even on hard days, you belong here 🤍",
-    "Small steps still move you forward. Keep going 🌿",
-    "You are enough. You always were. 💜",
-    "Come in, sit down — Ahira's listening 🤍",
-    "I've been thinking about you 💜",
-    "Every day with you is a good day ✨",
 ];
 
-// ── Content helpers ────────────────────────────────────────
-function _ahiraRandom(arr) {
-    return arr[Math.floor(Math.random() * arr.length)];
-}
-function _ahiraDaily(arr) {
-    const start = new Date(new Date().getFullYear(), 0, 0);
-    const day   = Math.floor((new Date() - start) / 864e5);
-    return arr[day % arr.length];
+function _pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function _daily(arr) {
+    const d = Math.floor((new Date() - new Date(new Date().getFullYear(),0,0)) / 864e5);
+    return arr[d % arr.length];
 }
 
-// Build AhiraContent object so existing code using it still works
+// AhiraContent object — works whether ahira_content.js is loaded or not
 const AhiraContent = {
-    randomQuote:      () => _ahiraRandom(AHIRA_QUOTES),
-    randomPeriodTip:  () => _ahiraRandom(AHIRA_PERIOD_TIPS),
-    randomWaterTip:   () => _ahiraRandom(AHIRA_WATER_TIPS),
-    randomWelcome:    () => _ahiraRandom(AHIRA_WELCOME),
-    dailyQuote:       () => _ahiraDaily(AHIRA_QUOTES),
-    dailyWelcome:     () => _ahiraDaily(AHIRA_WELCOME),
-    sessionWater:     () => _ahiraRandom(AHIRA_WATER_TIPS),
-    sessionPeriod:    () => _ahiraRandom(AHIRA_PERIOD_TIPS),
-    sessionWelcome:   () => _ahiraRandom(AHIRA_WELCOME),
-    sessionQuote:     () => _ahiraDaily(AHIRA_QUOTES),
+    randomQuote:     () => _pick(_QUOTES),
+    randomPeriodTip: () => _pick(_PERIOD_TIPS),
+    randomWaterTip:  () => _pick(_WATER_TIPS),
+    randomWelcome:   () => _pick(_WELCOME),
+    dailyQuote:      () => _daily(_QUOTES),
+    dailyWelcome:    () => _daily(_WELCOME),
+    sessionWater:    () => _pick(_WATER_TIPS),
+    sessionPeriod:   () => _pick(_PERIOD_TIPS),
+    sessionWelcome:  () => _pick(_WELCOME),
+    sessionQuote:    () => _daily(_QUOTES),
 };
 
 function renderDailyQuote() {
@@ -429,11 +335,8 @@ function enterApp() {
         if (btn) btn.innerText = initials;
         
         safe("chatWelcomeMsg", el => {
-           const welcome = (typeof AhiraContent !== "undefined")
-               ? AhiraContent.randomWelcome()
-               : "Hi there! I'm Ahira 💜";
-           el.innerText = `${welcome} How can I help you today?`;
-       });
+            el.innerText = AhiraContent.randomWelcome() + " How can I help you today?";
+        });
         safe("homeGreeting",   el => el.innerText = `${timeGreet}, ${currentUser.name} 💜`);
         safe("drawerName",     el => el.innerText = currentUser.name);
         safe("drawerEmail",    el => el.innerText = currentUser.email);
@@ -649,14 +552,11 @@ function renderHomeGroceryCard() {
 const OPENROUTER_KEY = "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";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const CHAT_MODELS = [
-   "meta-llama/llama-3.1-8b-instruct:free",
-   "mistralai/mistral-7b-instruct:free",
-    "openrouter/free",
+    "meta-llama/llama-3.1-8b-instruct:free",
+    "mistralai/mistral-7b-instruct:free",
     "qwen/qwen3-4b:free",
     "google/gemma-3n-e4b-it:free",
-    "google/gemma-3n-e2b-it:free",
-    "arcee-ai/trinity-mini:free",
-    "liquid/lfm-2.5-1.2b-instruct:free",
+    "openrouter/free",
 ];
 let chatHistory = [];
 
