@@ -649,8 +649,8 @@ function renderHomeGroceryCard() {
 const OPENROUTER_KEY = "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";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const CHAT_MODELS = [
-   "meta-llama/llama-3.1-8b-instruct:free"
-   "mistralai/mistral-7b-instruct:free"
+   "meta-llama/llama-3.1-8b-instruct:free",
+   "mistralai/mistral-7b-instruct:free",
     "openrouter/free",
     "qwen/qwen3-4b:free",
     "google/gemma-3n-e4b-it:free",
