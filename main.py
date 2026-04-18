@@ -193,6 +193,101 @@ def toggle_task(reminder_id: int, request: Request, db: Session = Depends(get_db
     return {"status": "updated"}
 
 
+
+
+
+# ─────────────────────────────────────────────────────────────
+# DELETE MY DATA — wipes all user data from PostgreSQL
+# ─────────────────────────────────────────────────────────────
+
+@app.delete("/delete_my_data")
+def delete_my_data(request: Request, db: Session = Depends(get_db)):
+    """
+    Deletes all data belonging to the authenticated user:
+    - All reminders
+    - All sessions (forces re-login on all devices)
+    The user account itself is NOT deleted (they can sign back in).
+    To also delete the account, use /delete_account instead.
+    """
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse(
+            {"status": "error", "message": "Not logged in."},
+            status_code=401
+        )
+
+    # Delete all reminders for this user
+    db.query(ReminderModel).filter(
+        ReminderModel.user_id == user.id
+    ).delete()
+
+    # Delete all sessions (forces re-login everywhere)
+    db.query(UserSession).filter(
+        UserSession.user_id == user.id
+    ).delete()
+
+    db.commit()
+
+    # Also try to clear MongoDB logs for this user
+    try:
+        import ai.mongo as mongo_module
+        col = mongo_module.get_collection("reminder_logs")
+        if col is not None:
+            col.delete_many({"user_id": user.id})
+        col2 = mongo_module.get_collection("chat_logs")
+        if col2 is not None:
+            col2.delete_many({"user_id": user.id})
+        col3 = mongo_module.get_collection("mood_logs")
+        if col3 is not None:
+            col3.delete_many({"user_id": user.id})
+    except Exception as e:
+        print(f"[delete_my_data] MongoDB cleanup error: {e}")
+
+    resp = JSONResponse({"status": "ok", "message": "All data deleted."})
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
+
+
+@app.delete("/delete_account")
+def delete_account(request: Request, db: Session = Depends(get_db)):
+    """
+    Permanently deletes the user account and ALL associated data.
+    This is irreversible.
+    """
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse(
+            {"status": "error", "message": "Not logged in."},
+            status_code=401
+        )
+
+    user_id = user.id
+
+    # Delete all reminders (cascade should handle this but explicit is safer)
+    db.query(ReminderModel).filter(ReminderModel.user_id == user_id).delete()
+
+    # Delete all sessions
+    db.query(UserSession).filter(UserSession.user_id == user_id).delete()
+
+    # Delete the user account itself
+    db.query(User).filter(User.id == user_id).delete()
+
+    db.commit()
+
+    # Clear MongoDB data
+    try:
+        import ai.mongo as mongo_module
+        for collection_name in ["reminder_logs", "chat_logs", "mood_logs"]:
+            col = mongo_module.get_collection(collection_name)
+            if col is not None:
+                col.delete_many({"user_id": user_id})
+    except Exception as e:
+        print(f"[delete_account] MongoDB cleanup error: {e}")
+
+    resp = JSONResponse({"status": "ok", "message": "Account permanently deleted."})
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
+    
 # ─────────────────────────────────────────────────────────────
 # STATUS ENDPOINTS
 # ─────────────────────────────────────────────────────────────
