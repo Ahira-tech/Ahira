@@ -329,15 +329,15 @@ def health():
     return {"status": "ok"}
 
 @app.delete("/delete_my_data")
-   def delete_my_data(request: Request, db: Session = Depends(get_db)):
-       user = current_user(request, db)
-       if not user:
-           return JSONResponse({"status":"error","message":"Not logged in."}, status_code=401)
-       # Delete all reminders
-       db.query(ReminderModel).filter(ReminderModel.user_id == user.id).delete()
-       # Delete all sessions (forces re-login)
-       db.query(UserSession).filter(UserSession.user_id == user.id).delete()
-       db.commit()
-       resp = JSONResponse({"status":"ok"})
-       resp.delete_cookie(SESSION_COOKIE)
-       return resp
+def delete_my_data(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse({"status":"error","message":"Not logged in."}, status_code=401)
+    # Delete all reminders
+    db.query(ReminderModel).filter(ReminderModel.user_id == user.id).delete()
+    # Delete all sessions (forces re-login)
+    db.query(UserSession).filter(UserSession.user_id == user.id).delete()
+    db.commit()
+    resp = JSONResponse({"status":"ok"})
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
