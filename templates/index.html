@@ -200,6 +200,14 @@
                     <div>
                         <div class="chatHeaderName">Ahira</div>
                         <div class="chatHeaderStatus">Always here for you 💜</div>
+                        <button id="privateModeBtn"
+                            title="Private mode OFF"
+                            onclick="togglePrivateMode()"
+                            style="margin-left:auto;width:36px;height:36px;border-radius:50%;
+                                   border:none;background:rgba(108,63,206,0.1);font-size:16px;
+                                   cursor:pointer;flex-shrink:0;">
+                            🔒
+                        </button>
                     </div>
                 </div>
 
@@ -682,53 +690,65 @@
 
                 <div class="drawerDivider"></div>
 
-                <div class="drawerSectionTitle">About &amp; Legal</div>
-                    <div class="drawerItem" onclick="openAbout()">
-                        <div class="drawerItemIcon" style="background:rgba(138,108,255,0.1);">💜</div>
-                        <div class="drawerItemText">
-                        <div class="drawerItemLabel">About Ahira</div>
-                        <div class="drawerItemSub">Version 1.0 · Always by your side</div>
-                </div>
-                    <span class="drawerItemArrow">›</span>
-                    </div>
-            <div class="drawerItem" onclick="openLegalPage('privacy')">
-                <div class="drawerItemIcon" style="background:rgba(147,197,253,0.2);">🔒</div>
-                    <div class="drawerItemText">
-                <div class="drawerItemLabel">Privacy Policy</div>
-                    <div class="drawerItemSub">How we protect your data</div>
-                </div>
-                    <span class="drawerItemArrow">›</span>
-                </div>    
-                <div class="drawerItem" onclick="openLegalPage('terms')">
-                    <div class="drawerItemIcon" style="background:rgba(196,181,253,0.2);">📋</div>
-                    <div class="drawerItemText">
-                    <div class="drawerItemLabel">Terms of Service</div>
-                        <div class="drawerItemSub">Rules and limitations</div>
-                </div>
-                <span class="drawerItemArrow">›</span>
-                </div>
-                <div class="drawerItem" onclick="openLegalPage('disclaimer')">
-                <div class="drawerItemIcon" style="background:rgba(251,191,36,0.15);">⚠️</div>
-                <div class="drawerItemText">
-                <div class="drawerItemLabel">Disclaimer</div>
-                    <div class="drawerItemSub">Health &amp; AI notices</div>
-                </div>
-                <span class="drawerItemArrow">›</span>
-                </div>
-            <div class="drawerItem" onclick="openLegalPage('guidelines')">
-            <div class="drawerItemIcon" style="background:rgba(167,243,208,0.2);">🌸</div>
-            <div class="drawerItemText">
-                <div class="drawerItemLabel">Community Guidelines</div>
-                <div class="drawerItemSub">Safe &amp; respectful use</div>
-                </div>
-                <span class="drawerItemArrow">›</span>    
-            </div>
-
+                
+<div class="drawerSectionTitle">About &amp; Legal</div>
+<div class="drawerItem" onclick="openAbout()">
+    <div class="drawerItemIcon" style="background:rgba(138,108,255,0.1);">💜</div>
+    <div class="drawerItemText">
+        <div class="drawerItemLabel">About Ahira</div>
+        <div class="drawerItemSub">Version 1.0 · Always by your side</div>
+    </div>
+    <span class="drawerItemArrow">›</span>
+</div>
+<div class="drawerItem" onclick="openLegalPage('privacy')">
+    <div class="drawerItemIcon" style="background:rgba(147,197,253,0.2);">🔒</div>
+    <div class="drawerItemText">
+        <div class="drawerItemLabel">Privacy Policy</div>
+        <div class="drawerItemSub">How we protect your data</div>
+    </div>
+    <span class="drawerItemArrow">›</span>
+</div>
+<div class="drawerItem" onclick="openLegalPage('terms')">
+    <div class="drawerItemIcon" style="background:rgba(196,181,253,0.2);">📋</div>
+    <div class="drawerItemText">
+        <div class="drawerItemLabel">Terms of Service</div>
+        <div class="drawerItemSub">Rules and limitations</div>
+    </div>
+    <span class="drawerItemArrow">›</span>
+</div>
+<div class="drawerItem" onclick="openLegalPage('disclaimer')">
+    <div class="drawerItemIcon" style="background:rgba(251,191,36,0.15);">⚠️</div>
+    <div class="drawerItemText">
+        <div class="drawerItemLabel">Disclaimer</div>
+        <div class="drawerItemSub">Health &amp; AI notices</div>
+    </div>
+    <span class="drawerItemArrow">›</span>
+</div>
+<div class="drawerItem" onclick="openLegalPage('guidelines')">
+    <div class="drawerItemIcon" style="background:rgba(167,243,208,0.2);">🌸</div>
+    <div class="drawerItemText">
+        <div class="drawerItemLabel">Community Guidelines</div>
+        <div class="drawerItemSub">Safe &amp; respectful use</div>
+    </div>
+    <span class="drawerItemArrow">›</span>
+</div>
 
                 <button class="drawerLogoutBtn" onclick="submitLogout()">
                     <span>🚪</span> Sign Out
                 </button>
-
+                 
+            <div class="drawerDivider"></div>
+ 
+            <div class="drawerSectionTitle">Danger Zone</div>
+            <div class="drawerItem" onclick="openDeleteDataModal()">
+                <div class="drawerItemIcon" style="background:rgba(248,113,113,0.12);">🗑️</div>
+                <div class="drawerItemText">
+                    <div class="drawerItemLabel" style="color:#dc2626;">Delete My Data</div>
+                    <div class="drawerItemSub">Wipe all local &amp; server data</div>
+                </div>
+                <span class="drawerItemArrow" style="color:#dc2626;">›</span>
+            </div>
+ 
             </div>
         </div>
 
