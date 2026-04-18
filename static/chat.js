@@ -608,6 +608,7 @@ function enterApp(){
   document.getElementById("appWrapper").style.display="flex";
   document.querySelectorAll(".appScreen").forEach(s=>{s.classList.remove("active");s.style.display="none";});
   loadSettings();
+  loadChatHistory(); 
   const hour=new Date().getHours(),tg=hour<12?"Good morning":hour<17?"Good afternoon":"Good evening";
   if(currentUser){
     const init=currentUser.name.charAt(0).toUpperCase();
@@ -644,28 +645,174 @@ function openAbout(){
   if(modal)modal.style.display="flex";
 }
 
+
+function openDeleteDataModal() {
+    closeDrawer();
+    if (!document.getElementById("deleteDataModal")) {
+        const m = document.createElement("div");
+        m.id = "deleteDataModal";
+        m.style.cssText = "position:fixed;inset:0;z-index:600;display:none;align-items:flex-end;justify-content:center;background:rgba(26,10,60,0.5);backdrop-filter:blur(8px);";
+        m.innerHTML = `
+        <div class="modalCard" onclick="event.stopPropagation()" style="border-radius:28px 28px 0 0;padding:28px 24px 48px;width:100%;max-width:390px;">
+            <div style="text-align:center;margin-bottom:22px;">
+                <div style="width:64px;height:64px;border-radius:50%;background:rgba(248,113,113,0.1);display:flex;align-items:center;justify-content:center;font-size:28px;margin:0 auto 12px;">🗑️</div>
+                <div style="font-family:Poppins,sans-serif;font-size:18px;font-weight:700;color:#dc2626;margin-bottom:8px;">Delete My Data</div>
+                <div style="font-size:13px;color:var(--t3);line-height:1.7;">This will permanently delete all your local data including chat history, reminders, water logs, medicines, grocery lists, period data, and settings. This cannot be undone.</div>
+            </div>
+            <div style="background:rgba(248,113,113,0.06);border:1px solid rgba(248,113,113,0.2);border-radius:12px;padding:14px;margin-bottom:20px;">
+                <div style="font-size:12px;color:#dc2626;line-height:1.7;">
+                    What will be deleted:<br>
+                    Chat history · Reminders · Water logs<br>
+                    Medicines · Grocery items · Period data<br>
+                    All app settings and preferences
+                </div>
+            </div>
+            <div id="deleteDataConfirmRow" style="display:flex;align-items:center;gap:10px;margin-bottom:16px;background:rgba(248,113,113,0.06);border-radius:10px;padding:12px;">
+                <input type="checkbox" id="deleteConfirmCheck" style="width:18px;height:18px;accent-color:#dc2626;cursor:pointer;flex-shrink:0;">
+                <label for="deleteConfirmCheck" style="font-size:13px;color:var(--t2);cursor:pointer;line-height:1.5;">I understand this cannot be undone</label>
+            </div>
+            <button class="actionBtn" onclick="confirmDeleteData()" style="margin-top:0;background:linear-gradient(135deg,#dc2626,#ef4444);">Delete All My Data</button>
+            <button class="secondaryBtn" onclick="closeModal('deleteDataModal')" style="margin-top:10px;">Cancel</button>
+        </div>`;
+        m.onclick = (e) => { if (e.target === m) closeModal("deleteDataModal"); };
+        document.querySelector(".phone").appendChild(m);
+    }
+    document.getElementById("deleteDataModal").style.display = "flex";
+    /* Reset checkbox */
+    const cb = document.getElementById("deleteConfirmCheck");
+    if (cb) cb.checked = false;
+}
+ 
+async function confirmDeleteData() {
+    const cb = document.getElementById("deleteConfirmCheck");
+    if (!cb || !cb.checked) {
+        showQuickToast("Please confirm by checking the box");
+        return;
+    }
+ 
+    /* 1. Clear all localStorage */
+    localStorage.clear();
+ 
+    /* 2. Clear in-memory state */
+    chatHistory = []; water = 0; waterLog = []; waterWeekly = {};
+    medicines = []; groceryItems = []; lastPeriodDate = null;
+    appSettings = {notifyReminders:true,notifyWater:true,notifyMedicine:true,notifyPeriod:true,showDailyQuotes:true,cycleLength:28};
+ 
+    /* 3. Delete server-side data (reminders in PostgreSQL) */
+    try {
+        await fetch("/delete_my_data", {method:"DELETE"});
+    } catch(e) {
+        /* Endpoint may not exist yet — local data still cleared */
+    }
+ 
+    closeModal("deleteDataModal");
+ 
+    /* 4. Log out and show fresh auth screen */
+    try { await fetch("/logout", {method:"POST"}); } catch(e) {}
+    currentUser = null;
+ 
+    document.querySelectorAll(".appScreen").forEach(s => { s.classList.remove("active"); s.style.display="none"; });
+    document.getElementById("appWrapper").style.display  = "none";
+    document.getElementById("authLogo").style.display    = "block";
+    document.getElementById("authWrapper").style.display = "block";
+    showAuthPanel("loginScreen");
+ 
+    showQuickToast("All data deleted. Starting fresh.");
+}
+ 
+
+
 /* ─── STATE ─────────────────────────────────────────────── */
 let water=0,waterTarget=8,waterLog=[],waterWeekly={},medicines=[],groceryItems=[];
 let currentGroceryFilter="all",currentMedFilter="all",selectedTaskType="task",selectedTaskPriority="normal",selectedMedPriority="normal",completedVisible=false,lastPeriodDate=null;
 const safe=(id,fn)=>{const el=document.getElementById(id);if(el)fn(el);};
 
 /* ─── NAVIGATION ────────────────────────────────────────── */
-function navApp(screen,btn){
-  document.querySelectorAll(".appScreen").forEach(s=>{s.classList.remove("active");s.style.display="none";});
-  const target=document.getElementById(screen);
-  if(target){
-    target.style.display="";
-    target.classList.add("active");
-    if(screen==="chatScreen"){setTimeout(()=>{const box=document.getElementById("chatMessages")||document.getElementById("chat");if(box)box.scrollTop=box.scrollHeight;},60);}
-    else target.scrollTop=0;
-  }
-  document.querySelectorAll(".navItem").forEach(b=>b.classList.remove("active"));
-  if(btn&&btn.classList&&btn.classList.contains("navItem"))btn.classList.add("active");
-  const loaders={homeScreen:loadHomeData,plannerScreen:loadPlanner,wellnessScreen:loadWellnessScreen,medicineScreen:loadMedicines,waterScreen:loadWaterScreen,groceryScreen:loadGrocery,periodScreen:calculatePeriod};
-  if(loaders[screen])loaders[screen]();
-}
-const nav=navApp;
 
+const _navStack = ["homeScreen"]; /* tracks navigation history */
+ 
+function navApp(screen, btn) {
+    /* Hide all screens */
+    document.querySelectorAll(".appScreen").forEach(s => {
+        s.classList.remove("active");
+        s.style.display = "none";
+    });
+ 
+    const target = document.getElementById(screen);
+    if (target) {
+        target.style.display = "";
+        target.classList.add("active");
+        if (screen === "chatScreen") {
+            setTimeout(() => {
+                const box = document.getElementById("chatMessages") || document.getElementById("chat");
+                if (box) box.scrollTop = box.scrollHeight;
+            }, 60);
+        } else {
+            target.scrollTop = 0;
+        }
+    }
+ 
+    /* Update nav highlight */
+    document.querySelectorAll(".navItem").forEach(b => b.classList.remove("active"));
+    if (btn && btn.classList && btn.classList.contains("navItem")) btn.classList.add("active");
+ 
+    /* Push to history stack only if different from current */
+    const current = _navStack[_navStack.length - 1];
+    if (screen !== current) {
+        _navStack.push(screen);
+        /* Push to browser history so back button fires popstate */
+        window.history.pushState({screen}, "", "");
+    }
+ 
+    /* Run loader */
+    const loaders = {
+        homeScreen:     loadHomeData,
+        plannerScreen:  loadPlanner,
+        wellnessScreen: loadWellnessScreen,
+        medicineScreen: loadMedicines,
+        waterScreen:    loadWaterScreen,
+        groceryScreen:  loadGrocery,
+        periodScreen:   calculatePeriod,
+        chatScreen:     () => { /* chat loads lazily */ },
+    };
+    if (loaders[screen]) loaders[screen]();
+}
+const nav = navApp;
+ 
+/* Back button handler — goes to previous tab in stack */
+function handleBackButton() {
+    const appVisible = document.getElementById("appWrapper").style.display !== "none";
+    if (!appVisible) return false; /* let auth handle it */
+ 
+    /* Remove current from stack */
+    if (_navStack.length > 1) {
+        _navStack.pop();
+        const prev = _navStack[_navStack.length - 1];
+        /* Navigate to previous without pushing to stack again */
+        document.querySelectorAll(".appScreen").forEach(s => {
+            s.classList.remove("active");
+            s.style.display = "none";
+        });
+        const target = document.getElementById(prev);
+        if (target) { target.style.display = ""; target.classList.add("active"); target.scrollTop = 0; }
+        /* Sync nav tab highlight */
+        const tabMap = {homeScreen:"homeScreen",chatScreen:"chatScreen",plannerScreen:"plannerScreen",wellnessScreen:"wellnessScreen"};
+        if (tabMap[prev]) {
+            document.querySelectorAll(".navItem").forEach((b,i) => {
+                b.classList.toggle("active", ["homeScreen","chatScreen","plannerScreen","wellnessScreen"][i] === prev);
+            });
+        }
+        const loaders = {homeScreen:loadHomeData,plannerScreen:loadPlanner,wellnessScreen:loadWellnessScreen,medicineScreen:loadMedicines,waterScreen:loadWaterScreen,groceryScreen:loadGrocery,periodScreen:calculatePeriod};
+        if (loaders[prev]) loaders[prev]();
+        return true;
+    }
+    /* At root (home) — let the browser/OS handle it (exit app) */
+    return false;
+}
+ 
+/* Updated popstate listener — use in window.onload */
+// window.addEventListener("popstate", () => { handleBackButton(); });
+ 
 /* ─── HOME ──────────────────────────────────────────────── */
 async function loadHomeData(){
   updateDateTime();renderDailyQuote();renderHomeWaterDrops();renderWaterTip();calculatePeriod();renderPeriodTip();renderHomeMedCard();renderHomeGroceryCard();renderHomeAlerts();
@@ -712,29 +859,158 @@ function renderHomeGroceryCard(){
 const OPENROUTER_KEY="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";
 const OPENROUTER_URL="https://openrouter.ai/api/v1/chat/completions";
 const CHAT_MODELS=["meta-llama/llama-3.1-8b-instruct:free","mistralai/mistral-7b-instruct:free","qwen/qwen3-4b:free","google/gemma-3n-e4b-it:free","openrouter/free"];
-let chatHistory=[];
-function buildSystemPrompt(){
-  const now=new Date().toLocaleString("en-IN",{weekday:"long",day:"numeric",month:"long",year:"numeric",hour:"2-digit",minute:"2-digit"}),today=new Date().toISOString().slice(0,10),name=currentUser?currentUser.name:"there";
-  return "You are Ahira — a warm caring AI companion for women. User's name: "+name+".\nPersonality: best-friend energy — kind, emotionally intelligent, genuine. Never robotic.\n- Light emojis naturally, not every sentence\n- Acknowledge feelings FIRST when someone is sad/anxious, then gently advise\n- Real specific responses, not generic platitudes\n- Concise: 2-4 lines for emotions, more for plans/recipes\n- Never start with I understand, I hear you, Of course or Absolutely\n- Don't say you're an AI unless directly asked\nToday: "+now+".\nREMINDER TAG: If user asks to set a reminder, confirm warmly, then at the very end add ONLY:\n[REMINDER: task_text | "+today+" | HH:MM]\n24-hour time. ONLY when user explicitly asks for a reminder.";
+
+/* Replace: let chatHistory=[]; */
+let chatHistory = [];
+let isPrivateMode = false;
+ 
+/* Call this once in enterApp() after loading settings */
+function loadChatHistory() {
+    try {
+        const saved = localStorage.getItem("ahiraChatHistory");
+        if (saved) {
+            chatHistory = JSON.parse(saved);
+            /* Re-render saved messages into chat UI */
+            restoreChatUI();
+        }
+    } catch(e) {
+        chatHistory = [];
+    }
 }
-async function sendMessage(){
-  const input=document.getElementById("message"),message=input.value.trim();if(!message)return;
-  const chatEl=document.getElementById("chatMessages")||document.getElementById("chat");if(!chatEl)return;
-  chatEl.querySelector(".chatSuggestions")?.remove();
-  appendUserBubble(chatEl,message);input.value="";chatEl.scrollTop=chatEl.scrollHeight;
-  const tw=createTypingIndicator();chatEl.appendChild(tw);chatEl.scrollTop=chatEl.scrollHeight;
-  const bme=tw.querySelector(".bubble--bot");
-  const msgs=[{role:"system",content:buildSystemPrompt()},...chatHistory,{role:"user",content:message}];
-  let reply=null;
-  const tryModel=(model)=>fetch(OPENROUTER_URL,{method:"POST",headers:{"Authorization":"Bearer "+OPENROUTER_KEY,"HTTP-Referer":"https://ahira.app","X-OpenRouter-Title":"Ahira","Content-Type":"application/json"},body:JSON.stringify({model,messages:msgs,max_tokens:350,temperature:0.80}),signal:AbortSignal.timeout(12000)}).then(async r=>{if(!r.ok)throw new Error("HTTP "+r.status);const d=await r.json();const c=d?.choices?.[0]?.message?.content;if(!c)throw new Error("empty");return c;});
-  for(const model of CHAT_MODELS){try{reply=await tryModel(model);if(reply)break;}catch(e){continue;}}
-  if(!reply){if(bme){bme.classList.remove("typing");bme.innerHTML="<b>Connection issue</b><br><span style='font-size:12px;opacity:0.75;'>Check your internet and try again.</span>";}chatEl.scrollTop=chatEl.scrollHeight;return;}
-  const{reply:cr,reminder}=parseReminderTag(reply);
-  if(bme){bme.classList.remove("typing");renderBotText(bme,cr);}
-  chatHistory.push({role:"user",content:message});chatHistory.push({role:"assistant",content:cr});
-  if(chatHistory.length>30)chatHistory=chatHistory.slice(-30);
-  if(reminder){await saveReminderToBackend(reminder);showReminderToast(reminder);}
-  chatEl.scrollTop=chatEl.scrollHeight;
+ 
+function saveChatHistory() {
+    if (isPrivateMode) return; /* never save private mode messages */
+    try {
+        /* Keep last 50 messages to avoid localStorage bloat */
+        const toSave = chatHistory.slice(-50);
+        localStorage.setItem("ahiraChatHistory", JSON.stringify(toSave));
+    } catch(e) {}
+}
+ 
+function restoreChatUI() {
+    const chatEl = document.getElementById("chatMessages");
+    if (!chatEl || chatHistory.length === 0) return;
+ 
+    /* Remove the suggestion chips temporarily */
+    const chips = chatEl.querySelector(".chatSuggestions");
+ 
+    /* Add messages back */
+    chatHistory.forEach(msg => {
+        if (msg.role === "user") {
+            appendUserBubble(chatEl, msg.content);
+        } else if (msg.role === "assistant") {
+            const w = document.createElement("div");
+            w.className = "msgRow msgRow--bot";
+            w.innerHTML = '<div class="chatAvatarSmall">A</div><div class="bubble bubble--bot"></div>';
+            const bubble = w.querySelector(".bubble--bot");
+            renderBotText(bubble, msg.content);
+            chatEl.appendChild(w);
+        }
+    });
+ 
+    /* Re-append chips at end if they existed */
+    if (chips) chatEl.appendChild(chips);
+    chatEl.scrollTop = chatEl.scrollHeight;
+}
+ 
+function clearChatHistory() {
+    chatHistory = [];
+    localStorage.removeItem("ahiraChatHistory");
+    const chatEl = document.getElementById("chatMessages");
+    if (chatEl) {
+        chatEl.innerHTML = `
+            <div class="chatDateDivider">Today</div>
+            <div class="msgRow msgRow--bot">
+                <div class="chatAvatarSmall">A</div>
+                <div class="bubble bubble--bot" id="chatWelcomeMsg">Hi! I'm Ahira How can I help you today?</div>
+            </div>
+            <div class="chatSuggestions">
+                <button class="suggBtn" onclick="quickChat('What should I cook today?')">Meal ideas</button>
+                <button class="suggBtn" onclick="quickChat('Plan my day')">Plan my day</button>
+                <button class="suggBtn" onclick="quickChat('I feel stressed')">I feel stressed</button>
+            </div>`;
+    }
+    showQuickToast("Chat cleared");
+}
+ 
+/* Updated sendMessage — persists history, respects private mode */
+async function sendMessage() {
+    const input   = document.getElementById("message");
+    const message = input.value.trim();
+    if (!message) return;
+ 
+    const chatEl = document.getElementById("chatMessages") || document.getElementById("chat");
+    if (!chatEl) return;
+    chatEl.querySelector(".chatSuggestions")?.remove();
+ 
+    appendUserBubble(chatEl, message);
+    input.value = "";
+    chatEl.scrollTop = chatEl.scrollHeight;
+ 
+    const tw = createTypingIndicator();
+    chatEl.appendChild(tw);
+    chatEl.scrollTop = chatEl.scrollHeight;
+    const bme = tw.querySelector(".bubble--bot");
+ 
+    const msgs = [{role:"system",content:buildSystemPrompt()}, ...chatHistory, {role:"user",content:message}];
+    let reply = null;
+ 
+    const tryModel = (model) => fetch(OPENROUTER_URL, {
+        method: "POST",
+        headers: {
+            "Authorization":      "Bearer " + OPENROUTER_KEY,
+            "HTTP-Referer":       "https://ahira.app",
+            "X-OpenRouter-Title": "Ahira",
+            "Content-Type":       "application/json"
+        },
+        body: JSON.stringify({model, messages:msgs, max_tokens:350, temperature:0.80}),
+        signal: AbortSignal.timeout(12000)
+    }).then(async r => {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const d = await r.json();
+        const c = d?.choices?.[0]?.message?.content;
+        if (!c) throw new Error("empty");
+        return c;
+    });
+ 
+    for (const model of CHAT_MODELS) {
+        try { reply = await tryModel(model); if (reply) break; } catch(e) { continue; }
+    }
+ 
+    if (!reply) {
+        if (bme) {
+            bme.classList.remove("typing");
+            bme.innerHTML = "<b>Connection issue</b><br><span style='font-size:12px;opacity:0.75;'>Check your internet and try again.</span>";
+        }
+        chatEl.scrollTop = chatEl.scrollHeight;
+        return;
+    }
+ 
+    const {reply:cr, reminder} = parseReminderTag(reply);
+    if (bme) { bme.classList.remove("typing"); renderBotText(bme, cr); }
+ 
+    /* Only push & save if NOT in private mode */
+    if (!isPrivateMode) {
+        chatHistory.push({role:"user", content:message});
+        chatHistory.push({role:"assistant", content:cr});
+        if (chatHistory.length > 60) chatHistory = chatHistory.slice(-60);
+        saveChatHistory();
+    }
+ 
+    if (reminder) { await saveReminderToBackend(reminder); showReminderToast(reminder); }
+    chatEl.scrollTop = chatEl.scrollHeight;
+}
+ 
+/* Private mode toggle — call from chat header button */
+function togglePrivateMode() {
+    isPrivateMode = !isPrivateMode;
+    const btn = document.getElementById("privateModeBtn");
+    if (btn) {
+        btn.style.background = isPrivateMode ? "rgba(248,113,113,0.15)" : "rgba(108,63,206,0.1)";
+        btn.title = isPrivateMode ? "Private mode ON — messages not saved" : "Private mode OFF";
+        btn.innerText = isPrivateMode ? "🔴" : "🔒";
+    }
+    showQuickToast(isPrivateMode ? "Private mode ON — chat won't be saved" : "Private mode OFF — chat saving resumed");
 }
 function parseReminderTag(text){const match=text.match(/\[REMINDER:\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(\d{2}:\d{2})\s*\]/i);if(!match)return{reply:text.trim(),reminder:null};const today=new Date().toISOString().slice(0,10),tomorrow=new Date(Date.now()+864e5).toISOString().slice(0,10);let date=match[2].trim();if(/tomorrow/i.test(date))date=tomorrow;else if(!/\d{4}-\d{2}-\d{2}/.test(date))date=today;return{reply:text.slice(0,match.index).trim(),reminder:{task:match[1].trim(),date,time:match[3].trim()}};}
 async function saveReminderToBackend(r){try{await fetch("/add_reminder",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({task:r.task,date:r.date,time:r.time,priority:"normal"})});}catch(e){}}
@@ -1003,17 +1279,54 @@ function selectMood(btn,mood,emoji){
 }
 
 /* ─── INIT ──────────────────────────────────────────────── */
-window.onload=function(){
-  document.getElementById("authLogo").style.display="none";
-  document.getElementById("authWrapper").style.display="none";
-  document.getElementById("appWrapper").style.display="none";
-  window.history.pushState({screen:"homeScreen"},"","");
-  window.addEventListener("popstate",(e)=>{
-    const av=document.getElementById("appWrapper").style.display!=="none";if(!av)return;
-    const home=document.getElementById("homeScreen");
-    if(home&&!home.classList.contains("active")){navApp("homeScreen",document.querySelector(".navItem"));window.history.pushState({screen:"homeScreen"},"","");}
-    else window.history.pushState({screen:"homeScreen"},"","");
-  });
-  if(typeof AhiraSplash!=="undefined")AhiraSplash.init(2600);
-  checkSession();
+
+window.onload = function() {
+    document.getElementById("authLogo").style.display    = "none";
+    document.getElementById("authWrapper").style.display = "none";
+    document.getElementById("appWrapper").style.display  = "none";
+ 
+    /* Seed the browser history stack */
+    window.history.replaceState({screen:"homeScreen"}, "", "");
+ 
+    /* Back button: go to previous tab, not always home */
+    window.addEventListener("popstate", () => {
+        const appVisible = document.getElementById("appWrapper").style.display !== "none";
+        if (!appVisible) return;
+ 
+        const handled = handleBackButton();
+        if (!handled) {
+            /* At root of app — push state so next back press can exit */
+            window.history.pushState({screen:"homeScreen"}, "", "");
+        }
+    });
+ 
+    /* Inject Private Mode button into chat header */
+    setTimeout(() => {
+        const chatHeader = document.querySelector(".chatHeader");
+        if (chatHeader && !document.getElementById("privateModeBtn")) {
+            const btn = document.createElement("button");
+            btn.id = "privateModeBtn";
+            btn.title = "Private mode OFF — messages are saved";
+            btn.innerText = "🔒";
+            btn.style.cssText = "margin-left:auto;width:36px;height:36px;border-radius:50%;border:none;background:rgba(108,63,206,0.1);font-size:16px;cursor:pointer;transition:background 0.2s;flex-shrink:0;";
+            btn.onclick = togglePrivateMode;
+            chatHeader.appendChild(btn);
+        }
+ 
+        /* Inject Clear Chat button */
+        const chatInputWrap = document.querySelector(".chatInputWrap");
+        if (chatInputWrap && !document.getElementById("clearChatBtn")) {
+            const clearBtn = document.createElement("button");
+            clearBtn.id = "clearChatBtn";
+            clearBtn.innerHTML = '<span style="font-size:11px;color:var(--t3);">Clear chat</span>';
+            clearBtn.style.cssText = "width:100%;text-align:center;background:none;border:none;padding:6px 0 0;cursor:pointer;";
+            clearBtn.onclick = () => {
+                if (confirm("Clear all chat history? This cannot be undone.")) clearChatHistory();
+            };
+            chatInputWrap.appendChild(clearBtn);
+        }
+    }, 500);
+ 
+    if (typeof AhiraSplash !== "undefined") AhiraSplash.init(2600);
+    checkSession();
 };
