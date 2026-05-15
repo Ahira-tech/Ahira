@@ -13,6 +13,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from datetime import datetime, timedelta
+from fastapi import Query
 
 from ai.database import engine, get_db, test_connection, Base
 from ai.models   import User, UserSession, Reminder as ReminderModel
@@ -31,12 +32,22 @@ SESSION_MAX_DAYS = 30
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(bind=engine)
+
+    db = next(get_db())
+    try:
+        run_feed_migrations(db)
+        print("[Ahira] ✅ Feed migrations applied")
+    except Exception as e:
+        db.rollback()
+        print(f"[Ahira] ❌ Feed migrations failed: {e}")
+    finally:
+        db.close()
+
     if test_connection():
         print("[Ahira] ✅ PostgreSQL ready")
     else:
         print("[Ahira] ❌ PostgreSQL failed")
     mongo.get_client()
-
 
 # ── Session helper ────────────────────────────────────────────
 def current_user(request: Request, db: Session):
@@ -77,6 +88,25 @@ class ReminderBody(BaseModel):
     date: Optional[str] = None
     time: Optional[str] = None
     priority: str = "normal"
+
+class FeedReportBody(BaseModel):
+    post_id: str
+    post_type: str
+    reason: str
+    details: Optional[str] = None
+
+
+def _safe_language(value: Optional[str]) -> str:
+    v = (value or "en").strip().lower()
+    return v if v in {"en", "hi", "mr"} else "en"
+
+
+def _safe_limit(value: int) -> int:
+    return max(1, min(value, 50))
+
+
+def _safe_offset(value: int) -> int:
+    return max(0, value)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -194,6 +224,209 @@ def toggle_task(reminder_id: int, request: Request, db: Session = Depends(get_db
 
 
 
+@app.get("/feeds")
+def get_feeds(
+    request: Request,
+    db: Session = Depends(get_db),
+    language: str = Query("en"),
+    limit: int = Query(20),
+    offset: int = Query(0),
+):
+    lang = _safe_language(language)
+    lim = _safe_limit(limit)
+    off = _safe_offset(offset)
+
+    # unified + ranked feed: sponsored -> important news -> regular news -> ahira picks
+    sql = text("""
+    WITH sponsored AS (
+      SELECT
+        'sponsored_' || id::text AS id,
+        'sponsored_post'::text AS type,
+        COALESCE(content, title) AS content,
+        image_url,
+        brand_name AS source_name,
+        redirect_url AS source_url,
+        target_language AS language,
+        created_at,
+        1 AS priority,
+        CASE
+          WHEN target_language = :lang THEN 0
+          WHEN target_language = 'en' THEN 1
+          ELSE 2
+        END AS language_rank,
+        created_at AS secondary_order
+      FROM sponsored_posts
+      WHERE is_active = TRUE
+        AND CURRENT_DATE BETWEEN start_date AND end_date
+        AND target_language IN (:lang, 'en')
+    ),
+    important_news AS (
+      SELECT
+        'news_' || id::text AS id,
+        'news_post'::text AS type,
+        short_summary AS content,
+        image_url,
+        source_name,
+        source_url,
+        language,
+        created_at,
+        2 AS priority,
+        CASE
+          WHEN language = :lang THEN 0
+          WHEN language = 'en' THEN 1
+          ELSE 2
+        END AS language_rank,
+        published_at AS secondary_order
+      FROM news_posts
+      WHERE language IN (:lang, 'en') AND is_important = TRUE
+    ),
+    regular_news AS (
+      SELECT
+        'news_' || id::text AS id,
+        'news_post'::text AS type,
+        short_summary AS content,
+        image_url,
+        source_name,
+        source_url,
+        language,
+        created_at,
+        3 AS priority,
+        CASE
+          WHEN language = :lang THEN 0
+          WHEN language = 'en' THEN 1
+          ELSE 2
+        END AS language_rank,
+        COALESCE(published_at, created_at) AS secondary_order
+      FROM news_posts
+      WHERE language IN (:lang, 'en') AND COALESCE(is_important, FALSE) = FALSE
+    ),
+    ahira AS (
+      SELECT
+        'pick_' || id::text AS id,
+        'ahira_pick'::text AS type,
+        content,
+        NULL::text AS image_url,
+        'Ahira Picks'::text AS source_name,
+        NULL::text AS source_url,
+        language,
+        created_at,
+        5 AS priority,
+        CASE
+          WHEN language = :lang THEN 0
+          WHEN language = 'en' THEN 1
+          ELSE 2
+        END AS language_rank,
+        created_at AS secondary_order
+      FROM ahira_picks
+      WHERE language IN (:lang, 'en')
+    )
+    SELECT id, type, content, image_url, source_name, source_url, language, created_at AS "createdAt"
+    FROM (
+      SELECT * FROM sponsored
+      UNION ALL
+      SELECT * FROM important_news
+      UNION ALL
+      SELECT * FROM regular_news
+      UNION ALL
+      SELECT * FROM ahira
+    ) rows
+    ORDER BY priority ASC, language_rank ASC, secondary_order DESC NULLS LAST, "createdAt" DESC
+    LIMIT :lim OFFSET :off;
+    """)
+
+    rows = db.execute(sql, {"lang": lang, "lim": lim, "off": off}).mappings().all()
+    return [dict(r) for r in rows]
+
+
+@app.post("/feed/report")
+def report_feed_post(body: FeedReportBody, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    reporter_user_id = str(user.id) if user else None
+
+    post_id = (body.post_id or "").strip()
+    post_type = (body.post_type or "").strip().lower()
+    reason = (body.reason or "").strip()
+    details = (body.details or "").strip() or None
+
+    if not post_id or not post_type or not reason:
+        return JSONResponse({"status": "error", "message": "post_id, post_type, reason are required"}, status_code=400)
+
+    db.execute(
+        text("""
+            INSERT INTO feed_reports (post_id, post_type, reason, details, reporter_user_id)
+            VALUES (:post_id, :post_type, :reason, :details, :reporter_user_id)
+        """),
+        {
+            "post_id": post_id,
+            "post_type": post_type,
+            "reason": reason,
+            "details": details,
+            "reporter_user_id": reporter_user_id,
+        },
+    )
+    db.commit()
+    return {"status": "ok"}
+
+def run_feed_migrations(db: Session):
+    migration_sql = """
+    ALTER TABLE news_posts
+      ALTER COLUMN language TYPE VARCHAR(10);
+
+    ALTER TABLE news_posts
+      ADD COLUMN IF NOT EXISTS is_important BOOLEAN NOT NULL DEFAULT FALSE;
+
+    CREATE INDEX IF NOT EXISTS idx_news_posts_created_at ON news_posts (created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_news_posts_language_created ON news_posts (language, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_news_posts_type_language_created ON news_posts (language, is_important, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS ahira_picks (
+      id BIGSERIAL PRIMARY KEY,
+      language VARCHAR(10) NOT NULL DEFAULT 'en',
+      content TEXT NOT NULL,
+      sub_type VARCHAR(64) NOT NULL,
+      quality_score NUMERIC(5,2) NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ahira_picks_created_at ON ahira_picks (created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_ahira_picks_language_created ON ahira_picks (language, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS sponsored_posts (
+      id BIGSERIAL PRIMARY KEY,
+      brand_name TEXT NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT,
+      image_url TEXT,
+      redirect_url TEXT NOT NULL,
+      start_date DATE NOT NULL,
+      end_date DATE NOT NULL,
+      target_language VARCHAR(10) NOT NULL DEFAULT 'en',
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CHECK (end_date >= start_date)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sponsored_posts_active_window
+      ON sponsored_posts (is_active, start_date, end_date);
+
+    CREATE INDEX IF NOT EXISTS idx_sponsored_posts_target_language
+      ON sponsored_posts (target_language);
+
+    CREATE TABLE IF NOT EXISTS feed_reports (
+      id BIGSERIAL PRIMARY KEY,
+      post_id TEXT NOT NULL,
+      post_type VARCHAR(32) NOT NULL,
+      reason TEXT NOT NULL,
+      details TEXT,
+      reporter_user_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_feed_reports_created_at ON feed_reports (created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_feed_reports_post_lookup ON feed_reports (post_id, post_type);
+    """
+    db.execute(text(migration_sql))
+    db.commit()
 
 
 # ─────────────────────────────────────────────────────────────
