@@ -469,58 +469,22 @@ def get_feeds(
     """
     )
 
-    try:
-        rows = db.execute(
-            sql,
-            {
-                "lang": lang,
-                "lim": lim,
-                "off": off,
-                "activeOnly": activeOnly,
-                "excludeExpired": excludeExpired,
-            },
-        ).mappings().all()
-        data = [dict(r) for r in rows]
-    except Exception as e:
-        db.rollback()
-        print(f"[feeds] database query failed, serving external fallback: {e}")
-        data = []
+    rows = db.execute(
+        sql,
+        {
+            "lang": lang,
+            "lim": lim,
+            "off": off,
+            "activeOnly": activeOnly,
+            "excludeExpired": excludeExpired,
+        },
+    ).mappings().all()
 
+    data = [dict(r) for r in rows]
     if not data:
         data = _fetch_news_for_language(lang)
 
     return {"items": data, "nextCursor": str(off + len(data)) if len(data) == lim else None}
-
-
-@app.get("/feeds/notifications")
-def feeds_notifications(
-    db: Session = Depends(get_db),
-    language: str = Query("en"),
-):
-    lang = _safe_language(language)
-    try:
-        row = db.execute(
-            text(
-                """
-                SELECT MAX(created_at) AS latest_created_at
-                FROM news_posts
-                WHERE language IN (:lang, 'en')
-                """
-            ),
-            {"lang": lang},
-        ).mappings().first()
-        latest = row["latest_created_at"] if row else None
-        return {
-            "status": "ok",
-            "language": lang,
-            "latestCreatedAt": latest.isoformat() if latest else None,
-        }
-    except Exception as e:
-        db.rollback()
-        return JSONResponse(
-            {"status": "error", "message": f"notifications unavailable: {e}"},
-            status_code=200,
-        )
 
 
 @app.post("/feeds")
