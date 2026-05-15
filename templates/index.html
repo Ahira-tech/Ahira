@@ -345,7 +345,7 @@
                     <div class="moodCardSub">Tap your mood — Ahira responds</div>
                     <div class="moodGrid">
                         <button class="moodBtn" onclick="selectMood(this,'happy','😊')"><span class="moodEmoji">😊</span><span class="moodLabel">Happy</span></button>
-                        <button class="moodBtn selected" onclick="selectMood(this,'calm','😌')"><span class="moodEmoji">😌</span><span class="moodLabel">Calm</span></button>
+                        <button class="moodBtn" onclick="selectMood(this,'calm','😌')"><span class="moodEmoji">😌</span><span class="moodLabel">Calm</span></button>
                         <button class="moodBtn" onclick="selectMood(this,'tired','😴')"><span class="moodEmoji">😴</span><span class="moodLabel">Tired</span></button>
                         <button class="moodBtn" onclick="selectMood(this,'sad','😢')"><span class="moodEmoji">😢</span><span class="moodLabel">Sad</span></button>
                         <button class="moodBtn" onclick="selectMood(this,'stressed','😤')"><span class="moodEmoji">😤</span><span class="moodLabel">Stressed</span></button>
@@ -607,18 +607,6 @@
                 <div id="groceryFullList"></div>
             </div><!-- /groceryScreen -->
 
-            <!-- FEEDS ─────────────────────────────────────── -->
-            <div id="feedsScreen" class="appScreen" style="display:none;">
-                <div class="plannerHeader">
-                    <div>
-                        <div class="screenTitle">Feeds</div>
-                        <div style="font-size:12px;color:var(--t3);" id="feedsSubLabel">Latest news and community picks</div>
-                    </div>
-                    <button class="addPillBtn" onclick="refreshFeeds()">Refresh</button>
-                </div>
-                <div id="feedsList"></div>
-            </div><!-- /feedsScreen -->
-
         </div><!-- /phoneContent -->
 
         <!-- ── BOTTOM NAV ──────────────────────────────────── -->
@@ -634,10 +622,6 @@
             </button>
             <button class="navItem" onclick="navApp('wellnessScreen',this)">
                 <span class="navIcon">❤️</span><span class="navLabel">Wellness</span>
-            </button>
-            <button class="navItem" onclick="navApp('feedsScreen',this)" style="position:relative;">
-                <span class="navIcon">📰</span><span class="navLabel">Feeds</span>
-                <span id="feedNavBadge" style="display:none;position:absolute;top:4px;right:10px;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:#ef4444;color:#fff;font-size:10px;line-height:16px;font-weight:700;text-align:center;">0</span>
             </button>
         </div>
 
