@@ -1,4 +1,4 @@
-* ==========================================================
+/* ==========================================================
    AHIRA — chat.js  v3.1
    FIXES: rotating cycle insights, rotating hydration tips,
    working settings drawer, edit profile modal,
@@ -245,7 +245,7 @@ const AhiraContent={
 function renderDailyQuote(){safe("dailyQuote",el=>el.innerText='"'+AhiraContent.dailyQuote()+'"');}
 
 /* ─── SETTINGS ──────────────────────────────────────────── */
-let appSettings={notifyReminders:true,notifyWater:true,notifyMedicine:true,notifyPeriod:true,notifyFeeds:true,showDailyQuotes:true,cycleLength:28};
+let appSettings={notifyReminders:true,notifyWater:true,notifyMedicine:true,notifyPeriod:true,showDailyQuotes:true,cycleLength:28};
 
 function loadSettings(){
   const s=localStorage.getItem("ahiraSettings");
@@ -539,9 +539,6 @@ function showQuickToast(msg){
 
 /* ─── AUTH ──────────────────────────────────────────────── */
 let currentUser=null;
-let feedsCache=[];
-let feedsNextCursor=null;
-let lastFeedNotifiedAt=null;
 function showAuthPanel(id){
   document.getElementById("loginScreen").style.display="none";
   document.getElementById("registerScreen").style.display="none";
@@ -629,13 +626,7 @@ function enterApp(){
   medicines=JSON.parse(localStorage.getItem("medicines"))||[];
   groceryItems=JSON.parse(localStorage.getItem("groceryItems"))||[];
   lastPeriodDate=localStorage.getItem("lastPeriodDate")?new Date(localStorage.getItem("lastPeriodDate")):null;
-  if ("Notification" in window && Notification.permission === "default" && appSettings.notifyFeeds) {
-    Notification.requestPermission().catch(()=>{});
-  }
-  hydrateStateFromServer().finally(()=>{
-    navApp("homeScreen",document.querySelector(".navItem"));
-    scheduleServerSync();
-  });
+  navApp("homeScreen",document.querySelector(".navItem"));
 }
 
 /* ─── DRAWER ────────────────────────────────────────────── */
@@ -705,7 +696,7 @@ async function confirmDeleteData() {
     /* 2. Clear in-memory state */
     chatHistory = []; water = 0; waterLog = []; waterWeekly = {};
     medicines = []; groceryItems = []; lastPeriodDate = null;
-    appSettings = {notifyReminders:true,notifyWater:true,notifyMedicine:true,notifyPeriod:true,notifyFeeds:true,showDailyQuotes:true,cycleLength:28};
+    appSettings = {notifyReminders:true,notifyWater:true,notifyMedicine:true,notifyPeriod:true,showDailyQuotes:true,cycleLength:28};
  
     /* 3. Delete server-side data (reminders in PostgreSQL) */
     try {
@@ -735,79 +726,6 @@ async function confirmDeleteData() {
 let water=0,waterTarget=8,waterLog=[],waterWeekly={},medicines=[],groceryItems=[];
 let currentGroceryFilter="all",currentMedFilter="all",selectedTaskType="task",selectedTaskPriority="normal",selectedMedPriority="normal",completedVisible=false,lastPeriodDate=null;
 const safe=(id,fn)=>{const el=document.getElementById(id);if(el)fn(el);};
-let _serverSyncTimer=null;
-
-async function loadServerSection(section){
-  try{
-    const res=await fetch("/state/"+section);
-    const data=await res.json();
-    return (data&&data.value)||{};
-  }catch(e){return {};}
-}
-
-async function saveServerSection(section,value){
-  try{
-    await fetch("/state/"+section,{
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({value})
-    });
-  }catch(e){}
-}
-
-function collectCurrentState(){
-  return {
-    settings: appSettings,
-    water: {water,waterTarget,waterLog,waterWeekly},
-    medicines: {medicines},
-    grocery: {groceryItems},
-    period: {
-      lastPeriodDate: lastPeriodDate ? lastPeriodDate.toISOString().slice(0,10) : null,
-      periodDuration: parseInt(localStorage.getItem("periodDuration")) || 5
-    }
-  };
-}
-
-function scheduleServerSync(){
-  clearTimeout(_serverSyncTimer);
-  _serverSyncTimer=setTimeout(async()=>{
-    if(!currentUser)return;
-    const s=collectCurrentState();
-    await saveServerSection("settings",s.settings||{});
-    await saveServerSection("water",s.water||{});
-    await saveServerSection("medicines",s.medicines||{});
-    await saveServerSection("grocery",s.grocery||{});
-    await saveServerSection("period",s.period||{});
-  },700);
-}
-
-async function hydrateStateFromServer(){
-  if(!currentUser)return;
-  const [settingsState,waterState,medState,groceryState,periodState]=await Promise.all([
-    loadServerSection("settings"),
-    loadServerSection("water"),
-    loadServerSection("medicines"),
-    loadServerSection("grocery"),
-    loadServerSection("period"),
-  ]);
-
-  if(settingsState&&Object.keys(settingsState).length){
-    appSettings={...appSettings,...settingsState};
-    saveSettings();
-  }
-  if(waterState&&Object.keys(waterState).length){
-    water=Number.isFinite(waterState.water)?waterState.water:(parseInt(localStorage.getItem("water"))||0);
-    waterTarget=Number.isFinite(waterState.waterTarget)?waterState.waterTarget:(parseInt(localStorage.getItem("waterTarget"))||8);
-    waterLog=Array.isArray(waterState.waterLog)?waterState.waterLog:[];
-    waterWeekly=(waterState.waterWeekly&&typeof waterState.waterWeekly==="object")?waterState.waterWeekly:{};
-  }
-  if(medState&&Array.isArray(medState.medicines)) medicines=medState.medicines;
-  if(groceryState&&Array.isArray(groceryState.groceryItems)) groceryItems=groceryState.groceryItems;
-  if(periodState&&periodState.lastPeriodDate){
-    lastPeriodDate=new Date(periodState.lastPeriodDate+"T00:00:00");
-    if(Number.isFinite(periodState.periodDuration)) localStorage.setItem("periodDuration",String(periodState.periodDuration));
-  }
-}
 
 /* ─── NAVIGATION ────────────────────────────────────────── */
 
@@ -824,9 +742,6 @@ function navApp(screen, btn) {
     if (target) {
         target.style.display = "";
         target.classList.add("active");
-        if (screen === "feedsScreen") {
-            updateFeedBadge(0);
-        }
         if (screen === "chatScreen") {
             setTimeout(() => {
                 const box = document.getElementById("chatMessages") || document.getElementById("chat");
@@ -854,7 +769,6 @@ function navApp(screen, btn) {
         homeScreen:     loadHomeData,
         plannerScreen:  loadPlanner,
         wellnessScreen: loadWellnessScreen,
-        feedsScreen:    loadFeedsScreen,
         medicineScreen: loadMedicines,
         waterScreen:    loadWaterScreen,
         groceryScreen:  loadGrocery,
@@ -882,13 +796,13 @@ function handleBackButton() {
         const target = document.getElementById(prev);
         if (target) { target.style.display = ""; target.classList.add("active"); target.scrollTop = 0; }
         /* Sync nav tab highlight */
-        const tabMap = {homeScreen:"homeScreen",chatScreen:"chatScreen",plannerScreen:"plannerScreen",wellnessScreen:"wellnessScreen",feedsScreen:"feedsScreen"};
+        const tabMap = {homeScreen:"homeScreen",chatScreen:"chatScreen",plannerScreen:"plannerScreen",wellnessScreen:"wellnessScreen"};
         if (tabMap[prev]) {
             document.querySelectorAll(".navItem").forEach((b,i) => {
-                b.classList.toggle("active", ["homeScreen","chatScreen","plannerScreen","wellnessScreen","feedsScreen"][i] === prev);
+                b.classList.toggle("active", ["homeScreen","chatScreen","plannerScreen","wellnessScreen"][i] === prev);
             });
         }
-        const loaders = {homeScreen:loadHomeData,plannerScreen:loadPlanner,wellnessScreen:loadWellnessScreen,feedsScreen:loadFeedsScreen,medicineScreen:loadMedicines,waterScreen:loadWaterScreen,groceryScreen:loadGrocery,periodScreen:calculatePeriod};
+        const loaders = {homeScreen:loadHomeData,plannerScreen:loadPlanner,wellnessScreen:loadWellnessScreen,medicineScreen:loadMedicines,waterScreen:loadWaterScreen,groceryScreen:loadGrocery,periodScreen:calculatePeriod};
         if (loaders[prev]) loaders[prev]();
         return true;
     }
@@ -920,98 +834,6 @@ function renderHomeAlerts(){
   if(og.length>0)c.innerHTML+='<div class="alertBanner danger" onclick="navApp(\'groceryScreen\')"><span class="alertBannerIcon">&#128715;</span><span class="alertBannerText"><b>'+og[0].name+'</b> — deadline passed!</span><span class="alertBannerArrow">&#8250;</span></div>';
   else if(ug.length>0)c.innerHTML+='<div class="alertBanner warning" onclick="navApp(\'groceryScreen\')"><span class="alertBannerIcon">&#128715;</span><span class="alertBannerText"><b>'+ug.length+' urgent item'+(ug.length>1?"s":"")+'</b> need restocking</span><span class="alertBannerArrow">&#8250;</span></div>';
   if(c.innerHTML===""&&(medicines.length>0||groceryItems.length>0))c.innerHTML='<div class="alertBanner ok"><span class="alertBannerIcon">&#10003;</span><span class="alertBannerText">Medicines &amp; grocery all stocked up!</span></div>';
-}
-
-/* ─── FEEDS ─────────────────────────────────────────────── */
-async function loadFeedsScreen(){
-  const list=document.getElementById("feedsList");
-  if(!list)return;
-  if(!feedsCache.length){
-    list.innerHTML='<p style="color:var(--t3);font-size:13px;padding:16px 0;text-align:center;">Loading feeds...</p>';
-  }
-  await refreshFeeds(false);
-}
-
-async function refreshFeeds(showToast=true){
-  const list=document.getElementById("feedsList");
-  if(!list)return;
-  try{
-    const res=await fetch("/feeds?limit=25&language=en&activeOnly=true&excludeExpired=true");
-    const data=await res.json();
-    const items=Array.isArray(data?.items)?data.items:[];
-    feedsCache=items;
-    feedsNextCursor=data?.nextCursor||null;
-    renderFeeds(items);
-    const nowLabel=new Date().toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"});
-    safe("feedsSubLabel",el=>el.innerText="Latest news and community picks · Updated "+nowLabel);
-    if(showToast)showQuickToast("Feeds updated");
-  }catch(e){
-    if(!feedsCache.length){
-      list.innerHTML='<p style="color:#ef4444;font-size:13px;padding:16px 0;text-align:center;">Could not load feeds right now.</p>';
-    }
-  }
-}
-
-function renderFeeds(items){
-  const list=document.getElementById("feedsList");
-  if(!list)return;
-  if(!items.length){
-    list.innerHTML='<p style="color:var(--t3);font-size:13px;padding:16px 0;text-align:center;">No feeds available yet.</p>';
-    return;
-  }
-  list.innerHTML=items.map((item)=>{
-    const isNews=(item?.is_news_post===true)||(String(item?.type||"").toLowerCase().includes("news"));
-    const source=escapeHtml(item?.source_name|| (isNews?"News":"Ahira Community"));
-    const content=escapeHtml(item?.content||"");
-    const createdRaw=item?.createdAt||item?.created_at;
-    const createdText=createdRaw?new Date(createdRaw).toLocaleString("en-IN",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}):"";
-    const img=item?.image_url||item?.imageUrl||"";
-    const sourceUrl=item?.source_url||item?.sourceUrl||"";
-    return '<div style="background:#fff;border:1px solid rgba(108,63,206,0.12);box-shadow:0 10px 24px rgba(108,63,206,0.08);border-radius:16px;padding:12px 12px 10px;margin-bottom:10px;">'
-      +(img?'<img src="'+escapeHtml(img)+'" alt="feed image" style="width:100%;height:160px;object-fit:cover;border-radius:12px;margin-bottom:10px;">':"")
-      +'<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">'
-      +'<div style="font-size:12px;font-weight:700;color:#6C3FCE;">'+source+'</div>'
-      +'<div style="font-size:11px;color:var(--t3);">'+escapeHtml(createdText)+'</div>'
-      +'</div>'
-      +'<div style="font-size:13px;color:var(--t2);line-height:1.55;margin-top:6px;">'+content+'</div>'
-      +(sourceUrl?'<div style="margin-top:10px;"><a href="'+escapeHtml(sourceUrl)+'" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:#6C3FCE;font-weight:700;text-decoration:none;">Read source ↗</a></div>':"")
-      +'</div>';
-  }).join("");
-}
-
-function updateFeedBadge(count){
-  const badge=document.getElementById("feedNavBadge");
-  if(!badge)return;
-  if(count>0){
-    badge.style.display="inline-block";
-    badge.textContent=String(Math.min(count,99));
-  }else{
-    badge.style.display="none";
-    badge.textContent="0";
-  }
-}
-
-async function pollFeedNotifications(){
-  if(!currentUser || !appSettings.notifyFeeds)return;
-  try{
-    const res=await fetch("/feeds/notifications?language=en");
-    const data=await res.json();
-    const latest=data?.latestCreatedAt||null;
-    if(!latest){
-      return;
-    }
-    if(!lastFeedNotifiedAt){
-      lastFeedNotifiedAt=latest;
-      return;
-    }
-    if(new Date(latest).getTime()>new Date(lastFeedNotifiedAt).getTime()){
-      lastFeedNotifiedAt=latest;
-      updateFeedBadge(1);
-      if("Notification" in window && Notification.permission==="granted"){
-        new Notification("Ahira Feeds", { body: "Fresh news is available in Feeds." });
-      }
-    }
-  }catch(e){}
 }
 function renderHomeMedCard(){
   if(medicines.length===0){safe("homeMedSub",el=>{el.innerText="No medicines added yet";el.style.color="#6b21a8";});safe("homeMedMeta",el=>el.innerText="");safe("homeMedBarFill",el=>el.style.width="0%");return;}
@@ -1435,58 +1257,25 @@ function deleteGrocery(i){groceryItems.splice(i,1);localStorage.setItem("grocery
 function filterGrocery(type,btn){currentGroceryFilter=type;document.querySelectorAll(".filterTab").forEach(b=>b.classList.remove("active"));if(btn)btn.classList.add("active");loadGrocery();}
 
 /* ─── WELLNESS ──────────────────────────────────────────── */
-function loadWellnessScreen(){
-  calculatePeriod();
-  renderHomeWaterDrops();
-  loadMedicines();
-  loadGrocery();
-  initMoodCardDefault();
-}
-
-function initMoodCardDefault(){
-  const selected=document.querySelector(".moodBtn.selected");
-  const response=document.getElementById("moodResponse");
-  if(selected && response && response.classList.contains("visible")) return;
-  if(selected){
-    const mood=selected.getAttribute("onclick")?.match(/'([^']+)'/g);
-    if(mood&&mood.length>=2){
-      const moodKey=mood[0].replace(/'/g,"");
-      const emoji=mood[1].replace(/'/g,"");
-      selectMood(selected,moodKey,emoji);
-      return;
-    }
-  }
-  const calmBtn=document.querySelector(".moodBtn[onclick*=\"'calm'\"]");
-  if(calmBtn) selectMood(calmBtn,"calm","😌");
-}
+function loadWellnessScreen(){calculatePeriod();renderHomeWaterDrops();loadMedicines();loadGrocery();}
 
 /* ─── MOOD ──────────────────────────────────────────────── */
-async function selectMood(btn,mood,emoji){
+function selectMood(btn,mood,emoji){
   document.querySelectorAll(".moodBtn").forEach(b=>b.classList.remove("selected"));btn.classList.add("selected");
-  const el=document.getElementById("moodResponse");if(!el)return;
-  let text=emoji+" You are heard. Let's take this moment gently.";
-  let tip="Take a deep breath and sip some water.";
-  try{
-    const res=await fetch("/mood/response",{
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({mood,emoji})
-    });
-    const data=await res.json();
-    if(data&&data.status==="ok"){
-      text=data.message||text;
-      tip=data.tip||tip;
-    }
-  }catch(e){}
-  const clean=(s)=>String(s||"").trim();
-  const lead=clean(text.split("\n\n")[0]||text);
-  const body=clean(text.split("\n\n").slice(1).join(" ")||"Take this one step at a time.");
-  el.innerHTML=
-    '<div class="moodResponseLead">'+lead+'</div>'+
-    '<div class="moodResponseBody">'+body+'</div>'+
-    '<div class="moodResponseTip">'+tip+'</div>';
+  const ar={
+    happy:[{text:emoji+" You're absolutely glowing today! That energy is contagious.\n\nKeep doing whatever made you feel this way.",tip:"Write down 3 things that made you happy today — it reinforces the good feelings."}],
+    calm:[{text:emoji+" What a peaceful state to be in.\n\nCalmness is a superpower. Use this energy to focus, create, or just breathe.",tip:"Try a 5-minute mindful breathing session to deepen this calm."}],
+    tired:[{text:emoji+" You deserve rest — no guilt about that.\n\nDrink some water, take a short nap, and don't push yourself today.",tip:"A 20-minute power nap restores alertness. Avoid screens before sleeping."}],
+    sad:[{text:emoji+" It's okay to feel sad. You don't have to be okay all the time.\n\nAhira is here. Take it one moment at a time.",tip:"Step outside for 10 minutes. Fresh air can gently lift your mood."}],
+    stressed:[{text:emoji+" Take a breath — you've handled hard things before.\n\nBreak whatever is stressing you into tiny steps.",tip:"Write down what's stressing you, then pick just one small thing to act on."}],
+    anxious:[{text:emoji+" Your feelings are valid. Anxiety is hard.\n\nTry 5-4-3-2-1 grounding: name 5 things you see, 4 you touch, 3 you hear.",tip:"Slow breathing — 4 in, hold 4, out 6 — calms your nervous system."}],
+    energetic:[{text:emoji+" Love this energy! Channel it well today!\n\nThis is the perfect time to tackle something you've been putting off.",tip:"Use this energy on your top 1-2 priorities. Don't scatter it."}],
+    grateful:[{text:emoji+" Gratitude is one of the most powerful feelings.\n\nYou're in a beautiful headspace.",tip:"Text someone you're grateful for today. It'll make you both feel wonderful."}],
+  };
+  const opts=ar[mood]||ar.calm,r=opts[Math.floor(Math.random()*opts.length)];
+  const el=document.getElementById("moodResponse");if(!el||!r)return;
+  el.innerHTML='<div style="margin-bottom:8px;">'+r.text.replace(/\n/g,"<br>")+'</div><div style="background:rgba(138,108,255,0.08);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--purple);font-weight:500;">'+r.tip+'</div><button onclick="document.getElementById(\'message\').value=\'I feel '+mood+'\';navApp(\'chatScreen\',null);sendMessage();" style="margin-top:10px;width:100%;padding:9px;border:none;border-radius:12px;background:linear-gradient(135deg,var(--purple),#b06fff);color:white;font-size:13px;font-weight:600;cursor:pointer;">Talk to Ahira about this</button>';
   el.classList.add("visible");
-  scheduleServerSync();
 }
 
 /* ─── INIT ──────────────────────────────────────────────── */
@@ -1540,7 +1329,4 @@ window.onload = function() {
  
     if (typeof AhiraSplash !== "undefined") AhiraSplash.init(2600);
     checkSession();
-    window.addEventListener("beforeunload",()=>{scheduleServerSync();});
-    setInterval(()=>{if(currentUser)scheduleServerSync();},30000);
-    setInterval(()=>{if(currentUser)pollFeedNotifications();},90000);
 };
