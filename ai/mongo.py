@@ -74,6 +74,28 @@ def ensure_indexes():
         if cache is not None:
             cache.create_index([("cache_key", ASCENDING)], unique=True)
             cache.create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
+
+        for name in [
+            "dynamic_home_content",
+            "generated_daily_posts",
+            "community_trending",
+            "notification_feed",
+            "onboarding_content",
+            "recommendation_feed",
+            "motivational_content",
+            "seasonal_content",
+            "content_templates",
+            "media_metadata",
+            "engagement_tracking",
+        ]:
+            col = get_collection(name)
+            if col is None:
+                continue
+            col.create_index([("created_at", DESCENDING)])
+            col.create_index([("user_id", ASCENDING)])
+            col.create_index([("engagement_score", DESCENDING)])
+            col.create_index([("trending_score", DESCENDING)])
+            col.create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
     except Exception as e:
         print(f"[MongoDB] ensure_indexes failed: {e}")
 
