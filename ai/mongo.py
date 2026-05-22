@@ -6,6 +6,7 @@ Place this file inside your ai/ folder.
 
 import os
 from datetime import datetime
+from pymongo import ASCENDING, DESCENDING
 
 MONGODB_URL = os.environ.get(
     "MONGODB_URL",
@@ -43,6 +44,38 @@ def get_collection(name: str):
     if client is None:
         return None
     return client["ahira_db"][name]
+
+
+def ensure_indexes():
+    """Create required Mongo indexes for centralized community/feed systems."""
+    try:
+        posts = get_collection("community_posts")
+        if posts is not None:
+            posts.create_index([("created_at", DESCENDING)])
+            posts.create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
+            posts.create_index([("author_user_id", ASCENDING), ("created_at", DESCENDING)])
+            posts.create_index([("language", ASCENDING), ("created_at", DESCENDING)])
+
+        comments = get_collection("community_comments")
+        if comments is not None:
+            comments.create_index([("post_id", ASCENDING), ("created_at", ASCENDING)])
+
+        reactions = get_collection("community_reactions")
+        if reactions is not None:
+            reactions.create_index([("post_id", ASCENDING)])
+            reactions.create_index([("post_id", ASCENDING), ("user_id", ASCENDING)], unique=True)
+
+        activity = get_collection("activity_feed")
+        if activity is not None:
+            activity.create_index([("user_id", ASCENDING), ("created_at", DESCENDING)])
+            activity.create_index([("created_at", DESCENDING)])
+
+        cache = get_collection("openrouter_cache")
+        if cache is not None:
+            cache.create_index([("cache_key", ASCENDING)], unique=True)
+            cache.create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
+    except Exception as e:
+        print(f"[MongoDB] ensure_indexes failed: {e}")
 
 
 def get_status() -> dict:
