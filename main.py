@@ -132,6 +132,10 @@ class GameScoreBody(BaseModel):
     seasonId: Optional[str] = None
     idempotencyKey: Optional[str] = None
     antiCheatMetadata: Optional[dict] = None
+    durationMs: Optional[int] = 0
+    deaths: Optional[int] = 0
+    powerups: Optional[int] = 0
+    attempts: Optional[int] = 1
 
 
 class SyncQueueItemBody(BaseModel):
@@ -241,6 +245,13 @@ def _anti_cheat_flags(db: Session, user_id: int, game_id: str, score: int, idemp
     return flags
 
 
+def _require_user(request: Request, db: Session):
+    user = current_user(request, db)
+    if not user:
+        return None, JSONResponse({"status": "error", "message": "Please log in."}, status_code=401)
+    return user, None
+
+
 def _fetch_news_for_language(lang: str):
     api_key = os.getenv("NEWS_API_KEY", "").strip()
     if not api_key:
@@ -291,6 +302,131 @@ def _fetch_news_for_language(lang: str):
         return rows
     except Exception:
         return []
+
+
+def _fallback_generated_posts(lang: str):
+    lines = {
+        "en": [
+            "Small progress bhi important hota hai 🌸",
+            "Aaj finally khud ke liye time nikala ✨",
+            "Kal se better feel ho raha hai 🌙",
+            "Happiness thodi thodi karke bhi aati hai 🤍",
+        ],
+        "hi": [
+            "आज थोड़ा आराम किया, मन हल्का लगा 🤍",
+            "छोटी जीत भी बड़ी होती है, खुद पर भरोसा रखो ✨",
+            "धीरे चलना भी आगे बढ़ना है 🌸",
+            "आज खुद के लिए समय निकाला, अच्छा लगा 🌙",
+        ],
+    }
+    chosen = lines.get(lang, lines["en"])
+    now = datetime.utcnow()
+    out = []
+    for idx, text_line in enumerate(chosen):
+        out.append(
+            {
+                "kind": "generated",
+                "language": lang,
+                "content": text_line,
+                "category": ["self care", "healing", "motivation", "peaceful thoughts"][idx % 4],
+                "mood": "calm",
+                "anonymous_identity": ["🌸 Soft Soul", "☁️ Quiet Mind", "🤍 Hidden Hug", "✨ Lost Dreamer"][idx % 4],
+                "created_at": now - timedelta(minutes=idx * 17),
+                "expires_at": now + timedelta(hours=24),
+                "engagement_score": 40 + (idx * 9),
+                "trending_score": 20 + (idx * 7),
+                "reactions": {"relate": 10 + idx, "hug": 8 + idx, "support": 6 + idx, "feltThis": 9 + idx},
+                "comment_count": 2 + idx,
+            }
+        )
+    return out
+
+
+def _refresh_generated_posts(lang: str):
+    key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if not key:
+        return _fallback_generated_posts(lang)
+    prompt = (
+        "Generate 6 short emotional community posts for Indian women users. "
+        "Language mix based on lang input. Keep simple words, warm tone, under 100 chars. "
+        "Return strict JSON array with fields content,category,mood,anonymous_identity."
+    )
+    try:
+        r = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://ahira.app",
+                "X-Title": "Ahira",
+            },
+            json={
+                "model": os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
+                "messages": [{"role": "user", "content": f"{prompt} lang={lang}"}],
+                "temperature": 0.8,
+                "max_tokens": 420,
+            },
+            timeout=18,
+        )
+        if r.status_code < 200 or r.status_code >= 300:
+            return _fallback_generated_posts(lang)
+        content = (((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        start = content.find("[")
+        end = content.rfind("]")
+        if start < 0 or end <= start:
+            return _fallback_generated_posts(lang)
+        import json
+
+        data = json.loads(content[start : end + 1])
+        now = datetime.utcnow()
+        out = []
+        for idx, row in enumerate(data[:6]):
+            out.append(
+                {
+                    "kind": "generated",
+                    "language": lang,
+                    "content": str(row.get("content", "")).strip(),
+                    "category": str(row.get("category", "motivation")).strip().lower(),
+                    "mood": str(row.get("mood", "calm")).strip().lower(),
+                    "anonymous_identity": str(row.get("anonymous_identity", "☁️ Quiet Mind")).strip(),
+                    "created_at": now - timedelta(minutes=idx * 13),
+                    "expires_at": now + timedelta(hours=24),
+                    "engagement_score": 30 + (idx * 8),
+                    "trending_score": 18 + (idx * 6),
+                    "reactions": {"relate": 7 + idx, "hug": 5 + idx, "support": 6 + idx, "feltThis": 8 + idx},
+                    "comment_count": 1 + idx,
+                }
+            )
+        return [x for x in out if x["content"]]
+    except Exception:
+        return _fallback_generated_posts(lang)
+
+
+def _ensure_generated_posts(lang: str):
+    col = mongo.get_collection("generated_daily_posts")
+    if col is None:
+        return _fallback_generated_posts(lang)
+    now = datetime.utcnow()
+    day_key = now.strftime("%Y-%m-%d")
+    q = {"language": lang, "day_key": day_key, "expires_at": {"$gt": now}}
+    rows = list(col.find(q).sort("created_at", -1).limit(20))
+    if rows:
+        return rows
+    fresh = _refresh_generated_posts(lang)
+    if not fresh:
+        return []
+    docs = []
+    for row in fresh:
+        payload = dict(row)
+        payload["day_key"] = day_key
+        payload["created_at"] = payload.get("created_at") or now
+        payload["expires_at"] = payload.get("expires_at") or (now + timedelta(hours=24))
+        docs.append(payload)
+    try:
+        col.insert_many(docs)
+    except Exception:
+        pass
+    return docs
 
 
 # ─────────────────────────────────────────────────────────────
@@ -443,12 +579,16 @@ def get_feeds(
             q["expires_at"] = {"$gt": datetime.utcnow()}
 
         rows = list(posts_col.find(q).sort("created_at", -1).skip(off).limit(lim))
+        generated = _ensure_generated_posts(lang)
+        merged = rows + generated
+        merged.sort(key=lambda x: x.get("created_at") or datetime.utcnow(), reverse=True)
+        merged = merged[off : off + lim]
         items = []
-        for r in rows:
+        for r in merged:
             items.append(
                 {
-                    "id": f"user_{str(r['_id'])}",
-                    "type": "user_post",
+                    "id": f"user_{str(r.get('_id') or uuid.uuid4().hex)}",
+                    "type": "generated_post" if r.get("kind") == "generated" else "user_post",
                     "content": r.get("content", ""),
                     "image_url": None,
                     "source_name": None,
@@ -460,6 +600,10 @@ def get_feeds(
                     "createdAt": (r.get("created_at") or datetime.utcnow()).isoformat(),
                     "expiresAt": (r.get("expires_at") or datetime.utcnow()).isoformat(),
                     "is_news_post": False,
+                    "engagementScore": int(r.get("engagement_score") or 0),
+                    "trendingScore": int(r.get("trending_score") or 0),
+                    "reactions": r.get("reactions") or {"relate": 0, "hug": 0, "support": 0, "feltThis": 0},
+                    "commentCount": int(r.get("comment_count") or 0),
                 }
             )
         if items:
@@ -944,6 +1088,13 @@ def report_feed_post(body: FeedReportBody, request: Request, db: Session = Depen
     return {"status": "ok"}
 
 
+@app.post("/feeds/generated/refresh")
+def refresh_generated_posts(language: str = Query("en")):
+    lang = _safe_language(language)
+    rows = _ensure_generated_posts(lang)
+    return {"status": "ok", "language": lang, "count": len(rows)}
+
+
 def run_feed_migrations(db: Session):
     migration_sql = """
     ALTER TABLE news_posts
@@ -1136,6 +1287,215 @@ def run_feed_migrations(db: Session):
       UNIQUE(user_id, idempotency_key)
     );
     CREATE INDEX IF NOT EXISTS idx_sync_queue_user_created ON sync_queue_receipts (user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS team_members (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      team_id BIGINT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      left_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, team_id, joined_at)
+    );
+    CREATE INDEX IF NOT EXISTS idx_team_members_user_active ON team_members (user_id, active);
+
+    CREATE TABLE IF NOT EXISTS leaderboard_cache (
+      id BIGSERIAL PRIMARY KEY,
+      scope VARCHAR(32) NOT NULL,
+      season_id VARCHAR(7),
+      game_id VARCHAR(64),
+      payload JSONB NOT NULL DEFAULT '[]'::jsonb,
+      generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(scope, season_id, game_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS game_sessions (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      game_id VARCHAR(64) NOT NULL,
+      season_id VARCHAR(7) NOT NULL,
+      team_id BIGINT REFERENCES teams(id),
+      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      ended_at TIMESTAMPTZ,
+      duration_ms BIGINT NOT NULL DEFAULT 0,
+      attempts INT NOT NULL DEFAULT 1,
+      deaths INT NOT NULL DEFAULT 0,
+      powerups INT NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_game_sessions_user_created ON game_sessions (user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS game_statistics (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      game_id VARCHAR(64) NOT NULL,
+      season_id VARCHAR(7) NOT NULL,
+      total_score BIGINT NOT NULL DEFAULT 0,
+      total_sessions BIGINT NOT NULL DEFAULT 0,
+      total_duration_ms BIGINT NOT NULL DEFAULT 0,
+      total_deaths BIGINT NOT NULL DEFAULT 0,
+      total_powerups BIGINT NOT NULL DEFAULT 0,
+      best_score BIGINT NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, game_id, season_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS achievements (
+      id BIGSERIAL PRIMARY KEY,
+      code VARCHAR(64) UNIQUE NOT NULL,
+      label VARCHAR(120) NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS achievement_progress (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      achievement_id BIGINT NOT NULL REFERENCES achievements(id) ON DELETE CASCADE,
+      progress NUMERIC(10,2) NOT NULL DEFAULT 0,
+      completed BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, achievement_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS notifications_metadata (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      category VARCHAR(64) NOT NULL,
+      state VARCHAR(32) NOT NULL DEFAULT 'scheduled',
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      scheduled_for TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_notifications_meta_user ON notifications_metadata (user_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS user_settings (
+      user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS app_preferences (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+      pref_key VARCHAR(120) NOT NULL,
+      pref_value JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, pref_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS streak_tracking (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      streak_type VARCHAR(64) NOT NULL,
+      streak_days INT NOT NULL DEFAULT 0,
+      last_active_date DATE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, streak_type)
+    );
+
+    CREATE TABLE IF NOT EXISTS contribution_history (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      team_id BIGINT REFERENCES teams(id),
+      season_id VARCHAR(7) NOT NULL,
+      points BIGINT NOT NULL DEFAULT 0,
+      source VARCHAR(64) NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS user_activity_summary (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      day_key DATE NOT NULL,
+      metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, day_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS diagnostics_logs (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+      event_name VARCHAR(120) NOT NULL,
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS anti_cheat_flags (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      submission_id BIGINT REFERENCES game_score_submissions(id) ON DELETE SET NULL,
+      flag VARCHAR(120) NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS user_devices (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      device_id VARCHAR(200) NOT NULL,
+      platform VARCHAR(32),
+      app_version VARCHAR(64),
+      last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, device_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS user_presence (
+      user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      status VARCHAR(32) NOT NULL DEFAULT 'offline',
+      last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS app_versions (
+      id BIGSERIAL PRIMARY KEY,
+      version VARCHAR(64) UNIQUE NOT NULL,
+      min_supported BOOLEAN NOT NULL DEFAULT FALSE,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS content_flags (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+      content_id VARCHAR(120) NOT NULL,
+      content_type VARCHAR(64) NOT NULL,
+      reason TEXT NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS moderation_logs (
+      id BIGSERIAL PRIMARY KEY,
+      moderator_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+      target_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+      action VARCHAR(64) NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
     """
     db.execute(text(migration_sql))
     for team_name in TEAM_NAMES:
@@ -1155,11 +1515,49 @@ def list_teams(db: Session = Depends(get_db)):
     return {"teams": [dict(r) for r in rows]}
 
 
+@app.get("/teams/membership")
+def get_team_membership(request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    row = db.execute(
+        text(
+            """
+            SELECT up.user_id, up.team_change_count, up.updated_at, t.name
+            FROM user_profiles up
+            LEFT JOIN teams t ON up.team_id = t.id
+            WHERE up.user_id = :uid
+            """
+        ),
+        {"uid": user.id},
+    ).mappings().first()
+    if not row:
+        return {"membership": None}
+    team_id = (row["name"] or "").strip().lower().replace(" ", "_")
+    return {
+        "membership": {
+            "teamId": team_id,
+            "teamChangeCount": int(row["team_change_count"] or 0),
+            "joinedAtIso": (row["updated_at"] or datetime.utcnow()).isoformat(),
+            "changeHistory": [],
+        }
+    }
+
+
+@app.post("/teams/membership")
+def post_team_membership(body: dict, request: Request, db: Session = Depends(get_db)):
+    team_id_raw = (body.get("teamId") or "").strip().lower()
+    if not team_id_raw:
+        return JSONResponse({"status": "error", "message": "teamId required"}, status_code=400)
+    team_name = team_id_raw.replace("_", " ").title()
+    return select_team(TeamSelectBody(teamName=team_name), request, db)
+
+
 @app.post("/teams/select")
 def select_team(body: TeamSelectBody, request: Request, db: Session = Depends(get_db)):
-    user = current_user(request, db)
-    if not user:
-        return JSONResponse({"status": "error", "message": "Please log in."}, status_code=401)
+    user, err = _require_user(request, db)
+    if err:
+        return err
     team = db.execute(text("SELECT id, name FROM teams WHERE name = :name"), {"name": body.teamName.strip()}).mappings().first()
     if not team:
         return JSONResponse({"status": "error", "message": "Invalid team name."}, status_code=400)
@@ -1185,15 +1583,17 @@ def select_team(body: TeamSelectBody, request: Request, db: Session = Depends(ge
         {"uid": user.id, "tid": team["id"]},
     )
     db.execute(text("UPDATE teams SET member_count = (SELECT COUNT(*) FROM user_profiles WHERE team_id = teams.id), updated_at = NOW()"))
+    db.execute(text("UPDATE team_members SET active = FALSE, left_at = NOW(), updated_at = NOW() WHERE user_id = :uid AND active = TRUE"), {"uid": user.id})
+    db.execute(text("INSERT INTO team_members (user_id, team_id, active) VALUES (:uid, :tid, TRUE)"), {"uid": user.id, "tid": team["id"]})
     db.commit()
     return {"status": "ok", "teamName": team["name"]}
 
 
 @app.post("/scores/submit")
 def submit_score(body: GameScoreBody, request: Request, db: Session = Depends(get_db)):
-    user = current_user(request, db)
-    if not user:
-        return JSONResponse({"status": "error", "message": "Please log in."}, status_code=401)
+    user, err = _require_user(request, db)
+    if err:
+        return err
     game_id = (body.gameId or "").strip().lower()
     if not game_id:
         return JSONResponse({"status": "error", "message": "gameId required"}, status_code=400)
@@ -1264,9 +1664,103 @@ def submit_score(body: GameScoreBody, request: Request, db: Session = Depends(ge
             ),
             {"uid": user.id, "tid": team_id, "sid": sid, "gid": inserted["id"], "points": int(body.contributionPoints or 0)},
         )
+        db.execute(
+            text(
+                """
+                INSERT INTO contribution_history (user_id, team_id, season_id, points, source, metadata)
+                VALUES (:uid, :tid, :sid, :points, 'game_score', CAST(:meta AS JSONB))
+                """
+            ),
+            {
+                "uid": user.id,
+                "tid": team_id,
+                "sid": sid,
+                "points": int(body.contributionPoints or 0),
+                "meta": '{"game":"%s"}' % game_id,
+            },
+        )
+    db.execute(
+        text(
+            """
+            INSERT INTO game_sessions (user_id, game_id, season_id, team_id, ended_at, duration_ms, attempts, deaths, powerups)
+            VALUES (:uid, :gid, :sid, :tid, NOW(), :dur, :attempts, :deaths, :powerups)
+            """
+        ),
+        {
+            "uid": user.id,
+            "gid": game_id,
+            "sid": sid,
+            "tid": team_id,
+            "dur": int(body.durationMs or 0),
+            "attempts": int(body.attempts or 1),
+            "deaths": int(body.deaths or 0),
+            "powerups": int(body.powerups or 0),
+        },
+    )
+    db.execute(
+        text(
+            """
+            INSERT INTO game_statistics (user_id, game_id, season_id, total_score, total_sessions, total_duration_ms, total_deaths, total_powerups, best_score)
+            VALUES (:uid, :gid, :sid, :score, 1, :dur, :deaths, :powerups, :score)
+            ON CONFLICT (user_id, game_id, season_id)
+            DO UPDATE SET
+              total_score = game_statistics.total_score + EXCLUDED.total_score,
+              total_sessions = game_statistics.total_sessions + 1,
+              total_duration_ms = game_statistics.total_duration_ms + EXCLUDED.total_duration_ms,
+              total_deaths = game_statistics.total_deaths + EXCLUDED.total_deaths,
+              total_powerups = game_statistics.total_powerups + EXCLUDED.total_powerups,
+              best_score = GREATEST(game_statistics.best_score, EXCLUDED.best_score),
+              updated_at = NOW()
+            """
+        ),
+        {
+            "uid": user.id,
+            "gid": game_id,
+            "sid": sid,
+            "score": int(body.score),
+            "dur": int(body.durationMs or 0),
+            "deaths": int(body.deaths or 0),
+            "powerups": int(body.powerups or 0),
+        },
+    )
+    for flag in flags:
+        db.execute(
+            text(
+                """
+                INSERT INTO anti_cheat_flags (user_id, submission_id, flag, metadata)
+                VALUES (:uid, :sidb, :flag, CAST(:meta AS JSONB))
+                """
+            ),
+            {"uid": user.id, "sidb": inserted["id"], "flag": flag, "meta": '{"game":"%s"}' % game_id},
+        )
     db.commit()
 
     return {"status": "ok", "submissionId": inserted["id"], "suspicious": len(flags) > 0, "antiCheatFlags": flags}
+
+
+@app.post("/game-scores")
+def submit_score_compat(body: GameScoreBody, request: Request, db: Session = Depends(get_db)):
+    return submit_score(body, request, db)
+
+
+@app.get("/game-scores")
+def list_game_scores(limit: int = Query(50), request: Request = None, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    rows = db.execute(
+        text(
+            """
+            SELECT id, game_id, score, season_id, team_id, xp_earned, contribution_points, is_suspicious, created_at
+            FROM game_score_submissions
+            WHERE user_id = :uid
+            ORDER BY created_at DESC
+            LIMIT :lim
+            """
+        ),
+        {"uid": user.id, "lim": min(max(1, limit), 200)},
+    ).mappings().all()
+    return {"items": [dict(r) for r in rows]}
 
 
 @app.get("/leaderboard/personal")
@@ -1310,6 +1804,18 @@ def team_leaderboard(seasonId: Optional[str] = Query(None), limit: int = Query(2
         ),
         {"sid": sid, "lim": lim},
     ).mappings().all()
+    db.execute(
+        text(
+            """
+            INSERT INTO leaderboard_cache (scope, season_id, game_id, payload, generated_at)
+            VALUES ('team', :sid, NULL, CAST(:payload AS JSONB), NOW())
+            ON CONFLICT (scope, season_id, game_id)
+            DO UPDATE SET payload = EXCLUDED.payload, generated_at = NOW(), updated_at = NOW()
+            """
+        ),
+        {"sid": sid, "payload": str([dict(r) for r in rows]).replace("'", '"')},
+    )
+    db.commit()
     return {"seasonId": sid, "items": [dict(r) for r in rows]}
 
 
@@ -1364,6 +1870,48 @@ def sync_queue(body: SyncQueueBatchBody, request: Request, db: Session = Depends
         results.append({"idempotencyKey": idem, "status": "accepted", "response": resp_payload})
     db.commit()
     return {"status": "ok", "results": results}
+
+
+@app.get("/teams/season")
+def team_season_snapshot(seasonId: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    sid = seasonId or _season_id()
+    data = team_leaderboard(sid, 20, db)
+    return {"seasonId": sid, "leaderboard": data.get("items", [])}
+
+
+@app.get("/activity")
+def activity_feed(request: Request, limit: int = Query(20), db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    lim = min(max(1, limit), 100)
+    col = mongo.get_collection("activity_feed")
+    if col is not None:
+        rows = list(col.find({"$or": [{"user_id": user.id}, {"visibility": "global"}]}).sort("created_at", -1).limit(lim))
+        if rows:
+            return {
+                "items": [
+                    {
+                        "title": r.get("title", "Activity"),
+                        "subtitle": r.get("subtitle", ""),
+                        "createdAt": (r.get("created_at") or datetime.utcnow()).isoformat(),
+                    }
+                    for r in rows
+                ]
+            }
+    pg_rows = db.execute(
+        text(
+            """
+            SELECT source AS title, CONCAT('Points: ', points) AS subtitle, created_at
+            FROM contribution_history
+            WHERE user_id = :uid
+            ORDER BY created_at DESC
+            LIMIT :lim
+            """
+        ),
+        {"uid": user.id, "lim": lim},
+    ).mappings().all()
+    return {"items": [{"title": r["title"], "subtitle": r["subtitle"], "createdAt": r["created_at"].isoformat()} for r in pg_rows]}
 
 
 @app.get("/users/me/stats")
