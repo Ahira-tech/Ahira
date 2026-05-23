@@ -5,6 +5,7 @@ Sessions expire after 30 days. Guests see empty data.
 """
 
 import os
+import json
 import hashlib
 import uuid
 from datetime import datetime, timedelta
@@ -149,6 +150,50 @@ class SyncQueueBatchBody(BaseModel):
     items: list[SyncQueueItemBody]
 
 
+class ReminderUpdateBody(BaseModel):
+    task: str
+    date: Optional[str] = None
+    time: Optional[str] = None
+    priority: str = "normal"
+    completed: Optional[int] = None
+
+
+class TeamChangeBody(BaseModel):
+    teamName: str
+
+
+class WaterTrackBody(BaseModel):
+    amountMl: int
+    consumedAt: Optional[str] = None
+    dayKey: Optional[str] = None
+    source: Optional[str] = "manual"
+
+
+class HabitTrackBody(BaseModel):
+    habitCode: str
+    value: int = 1
+    dayKey: Optional[str] = None
+    metadata: Optional[dict] = None
+
+
+class MedicineTrackBody(BaseModel):
+    medicineName: str
+    dosage: Optional[str] = None
+    timing: Optional[str] = None
+    timings: Optional[list[str]] = None
+    taken: bool = False
+    dayKey: Optional[str] = None
+    metadata: Optional[dict] = None
+
+
+class DailyTaskTrackBody(BaseModel):
+    taskCode: str
+    title: str
+    completed: bool = False
+    dayKey: Optional[str] = None
+    metadata: Optional[dict] = None
+
+
 def _safe_language(value: Optional[str]) -> str:
     v = (value or "en").strip().lower()
     return v if v in {"en", "hi", "mr"} else "en"
@@ -167,6 +212,11 @@ def _normalized_post_id(raw: str) -> str:
     if value.startswith("news_") or value.startswith("user_"):
         return value
     return f"user_{value}"
+
+
+def _mongo_post_id_from_any(raw: str) -> str:
+    key = _normalized_post_id(raw)
+    return key.replace("user_", "", 1)
 
 
 TEAM_NAMES = [
@@ -188,6 +238,20 @@ def _season_id(now: Optional[datetime] = None) -> str:
     return dt.strftime("%Y-%m")
 
 
+def _day_key(now: Optional[datetime] = None) -> str:
+    dt = now or datetime.utcnow()
+    return dt.strftime("%Y-%m-%d")
+
+
+def _safe_iso_datetime(value: Optional[str], fallback: Optional[datetime] = None) -> datetime:
+    if not value:
+        return fallback or datetime.utcnow()
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return fallback or datetime.utcnow()
+
+
 def _mongo_oid(value: str):
     try:
         return ObjectId(value)
@@ -199,6 +263,83 @@ def _feed_actor_name(user):
     if not user:
         return "Guest"
     return (user.name or "User").strip()[:100]
+
+
+def _mongo_reaction_key(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    v = str(value).strip()
+    if not v:
+        return None
+    low = v.lower()
+    if low == "feltthis":
+        return "feltThis"
+    return low if low in {"relate", "hug", "support"} else None
+
+
+def _post_counts_from_mongo(post_id: str):
+    post_key = _mongo_post_id_from_any(post_id)
+    comments_col = mongo.get_collection("community_comments")
+    reactions_col = mongo.get_collection("community_reactions")
+    counts = {"relate": 0, "hug": 0, "support": 0, "feltThis": 0}
+    comments_count = 0
+    if comments_col is not None:
+        comments_count = int(comments_col.count_documents({"post_id": post_key, "deleted": {"$ne": True}}))
+    if reactions_col is not None:
+        stats_cursor = reactions_col.aggregate(
+            [
+                {"$match": {"post_id": post_key}},
+                {"$group": {"_id": "$reaction", "count": {"$sum": 1}}},
+            ]
+        )
+        for row in stats_cursor:
+            rk = _mongo_reaction_key(row.get("_id"))
+            if rk in counts:
+                counts[rk] = int(row.get("count") or 0)
+    return comments_count, counts
+
+
+def _sync_post_counters_mongo(post_id: str):
+    posts_col = mongo.get_collection("community_posts")
+    if posts_col is None:
+        return None
+    comments_count, reactions = _post_counts_from_mongo(post_id)
+    posts_col.update_one(
+        {"_id": _mongo_oid(_mongo_post_id_from_any(post_id))},
+        {
+            "$set": {
+                "comment_count": comments_count,
+                "comments_count": comments_count,
+                "reactions": reactions,
+                "updated_at": datetime.utcnow(),
+            }
+        },
+    )
+    return {"commentCount": comments_count, "reactions": reactions}
+
+
+def _log_social_activity(post_id: str, actor_user_id: Optional[int], title: str, subtitle: str):
+    posts_col = mongo.get_collection("community_posts")
+    activity_col = mongo.get_collection("activity_feed")
+    if posts_col is None or activity_col is None:
+        return
+    post = posts_col.find_one({"_id": _mongo_oid(_mongo_post_id_from_any(post_id))}) or {}
+    author_id = post.get("author_user_id")
+    if author_id is None:
+        return
+    if actor_user_id is not None and int(actor_user_id) == int(author_id):
+        return
+    activity_col.insert_one(
+        {
+            "user_id": int(author_id),
+            "visibility": "private",
+            "kind": "social",
+            "title": title,
+            "subtitle": subtitle,
+            "post_id": _mongo_post_id_from_any(post_id),
+            "created_at": datetime.utcnow(),
+        }
+    )
 
 
 def _anti_cheat_flags(db: Session, user_id: int, game_id: str, score: int, idempotency_key: str):
@@ -493,6 +634,17 @@ def me(request: Request, db: Session = Depends(get_db)):
     return JSONResponse({"status": "ok", "user": {"name": user.name, "email": user.email}})
 
 
+@app.post("/session/refresh")
+def refresh_session(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse({"status": "error", "message": "Please log in."}, status_code=401)
+    token = crud.create_session(db, user.id)
+    resp = JSONResponse({"status": "ok", "user": {"name": user.name, "email": user.email}})
+    resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=SESSION_MAX_DAYS * 24 * 3600)
+    return resp
+
+
 # ─────────────────────────────────────────────────────────────
 # REMINDERS — all strictly user-scoped
 # ─────────────────────────────────────────────────────────────
@@ -547,6 +699,43 @@ def toggle_task(reminder_id: int, request: Request, db: Session = Depends(get_db
     return {"status": "updated"}
 
 
+@app.put("/reminder/{reminder_id}")
+def update_task(reminder_id: int, body: ReminderUpdateBody, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse({"status": "error", "message": "Not logged in."}, status_code=401)
+    task = (body.task or "").strip()
+    if not task:
+        return JSONResponse({"status": "error", "message": "Task cannot be empty"}, status_code=400)
+    row = db.execute(
+        text(
+            """
+            UPDATE reminders
+            SET task = :task,
+                date = :date,
+                time = :time,
+                priority = :priority,
+                completed = COALESCE(:completed, completed)
+            WHERE id = :rid AND user_id = :uid
+            RETURNING id
+            """
+        ),
+        {
+            "task": task,
+            "date": body.date,
+            "time": body.time,
+            "priority": body.priority or "normal",
+            "completed": body.completed,
+            "rid": reminder_id,
+            "uid": user.id,
+        },
+    ).mappings().first()
+    db.commit()
+    if not row:
+        return JSONResponse({"status": "error", "message": "Reminder not found."}, status_code=404)
+    return {"status": "ok"}
+
+
 # ─────────────────────────────────────────────────────────────
 # FEEDS
 # ─────────────────────────────────────────────────────────────
@@ -563,6 +752,8 @@ def get_feeds(
 ):
     lang = _safe_language(language)
     lim = _safe_limit(limit)
+    user = current_user(request, db)
+    current_user_id = user.id if user else None
 
     if cursor is not None and cursor.strip().isdigit():
         off = _safe_offset(int(cursor.strip()))
@@ -583,11 +774,32 @@ def get_feeds(
         merged = rows + generated
         merged.sort(key=lambda x: x.get("created_at") or datetime.utcnow(), reverse=True)
         merged = merged[off : off + lim]
+        post_ids = []
+        for r in merged:
+            rid = str(r.get("_id") or "")
+            if rid:
+                post_ids.append(rid)
+
+        selected_by_post = {}
+        reactions_col = mongo.get_collection("community_reactions")
+        if current_user_id is not None and reactions_col is not None and post_ids:
+            selected_rows = list(
+                reactions_col.find(
+                    {"post_id": {"$in": post_ids}, "user_id": current_user_id},
+                    {"post_id": 1, "reaction": 1},
+                )
+            )
+            for rr in selected_rows:
+                rk = _mongo_reaction_key(rr.get("reaction"))
+                if rk:
+                    selected_by_post[str(rr.get("post_id"))] = rk
+
         items = []
         for r in merged:
+            rid = str(r.get("_id") or uuid.uuid4().hex)
             items.append(
                 {
-                    "id": f"user_{str(r.get('_id') or uuid.uuid4().hex)}",
+                    "id": f"user_{rid}",
                     "type": "generated_post" if r.get("kind") == "generated" else "user_post",
                     "content": r.get("content", ""),
                     "image_url": None,
@@ -604,6 +816,7 @@ def get_feeds(
                     "trendingScore": int(r.get("trending_score") or 0),
                     "reactions": r.get("reactions") or {"relate": 0, "hug": 0, "support": 0, "feltThis": 0},
                     "commentCount": int(r.get("comment_count") or 0),
+                    "selected_reaction": selected_by_post.get(rid),
                 }
             )
         if items:
@@ -790,7 +1003,9 @@ def create_feed_post(body: FeedCreateBody, request: Request, db: Session = Depen
     posts_col = mongo.get_collection("community_posts")
     inserted_id = None
     if posts_col is not None:
+        post_uuid = uuid.uuid4().hex
         payload = {
+            "post_id": post_uuid,
             "author_user_id": user_id,
             "author_name": _feed_actor_name(user),
             "language": lang,
@@ -801,6 +1016,9 @@ def create_feed_post(body: FeedCreateBody, request: Request, db: Session = Depen
             "created_at": created_at,
             "expires_at": expires_at,
             "deleted": False,
+            "comment_count": 0,
+            "comments_count": 0,
+            "reactions": {"relate": 0, "hug": 0, "support": 0, "feltThis": 0},
         }
         inserted = posts_col.insert_one(payload)
         inserted_id = str(inserted.inserted_id)
@@ -922,6 +1140,13 @@ def create_feed_comment(post_id: str, body: FeedCommentCreateBody, request: Requ
             }
         )
         inserted_id = str(inserted.inserted_id)
+        _sync_post_counters_mongo(key)
+        _log_social_activity(
+            key,
+            user.id if user else None,
+            "Someone commented on your post 🌸",
+            "Your post is getting attention.",
+        )
     else:
         inserted = db.execute(
             text(
@@ -952,6 +1177,7 @@ def create_feed_comment(post_id: str, body: FeedCommentCreateBody, request: Requ
             "createdAt": created_at.isoformat(),
             "deleted": False,
         },
+        "postSummary": _sync_post_counters_mongo(key) if comments_col is not None else None,
     }
 
 
@@ -964,8 +1190,8 @@ def react_feed(post_id: str, body: FeedReactionBody, request: Request, db: Sessi
 
     key = _normalized_post_id(post_id)
     mongo_post_id = key.replace("user_", "", 1)
-    reaction = (body.reaction or "").strip().lower() or None
-    allowed = {"relate", "hug", "support", "feltThis".lower()}
+    reaction = _mongo_reaction_key(body.reaction)
+    allowed = {"relate", "hug", "support", "feltThis"}
     if reaction is not None and reaction not in allowed:
         return JSONResponse({"status": "error", "message": "invalid reaction"}, status_code=400)
 
@@ -985,20 +1211,15 @@ def react_feed(post_id: str, body: FeedReactionBody, request: Request, db: Sessi
                 },
                 upsert=True,
             )
-        stats_cursor = reactions_col.aggregate(
-            [
-                {"$match": {"post_id": mongo_post_id}},
-                {"$group": {"_id": "$reaction", "count": {"$sum": 1}}},
-            ]
-        )
-        counts = {"relate": 0, "hug": 0, "support": 0, "feltThis": 0}
-        for row in stats_cursor:
-            key_name = row["_id"]
-            if key_name == "feltthis":
-                counts["feltThis"] = int(row["count"])
-            elif key_name in {"relate", "hug", "support"}:
-                counts[key_name] = int(row["count"])
-        return {"status": "ok", "reactions": counts}
+        summary = _sync_post_counters_mongo(key) or {"commentCount": 0, "reactions": {"relate": 0, "hug": 0, "support": 0, "feltThis": 0}}
+        if reaction is not None:
+            _log_social_activity(
+                key,
+                user.id,
+                "Someone liked your post 🌸",
+                "Your post is getting attention.",
+            )
+        return {"status": "ok", "reactions": summary["reactions"], "commentCount": summary["commentCount"], "selectedReaction": reaction}
     if reaction is None:
         db.execute(text("DELETE FROM feed_reactions WHERE post_id = :post_id AND user_id = :user_id"), {"post_id": key, "user_id": user.id})
     else:
@@ -1029,6 +1250,63 @@ def react_feed(post_id: str, body: FeedReactionBody, request: Request, db: Sessi
             "feltThis": int(stats["felt_this"] or 0),
         },
     }
+
+
+@app.delete("/feeds/{post_id}")
+def delete_feed_post(post_id: str, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    key = _normalized_post_id(post_id)
+    post_oid = _mongo_oid(_mongo_post_id_from_any(key))
+    posts_col = mongo.get_collection("community_posts")
+    if posts_col is not None and post_oid is not None:
+        row = posts_col.find_one({"_id": post_oid})
+        if not row:
+            return JSONResponse({"status": "error", "message": "Post not found"}, status_code=404)
+        if int(row.get("author_user_id") or -1) != int(user.id):
+            return JSONResponse({"status": "error", "message": "Not allowed"}, status_code=403)
+        posts_col.update_one({"_id": post_oid}, {"$set": {"deleted": True, "updated_at": datetime.utcnow()}})
+        return {"status": "ok"}
+    deleted = db.execute(
+        text("UPDATE feed_user_posts SET deleted = TRUE WHERE id::text = :pid AND user_id = :uid RETURNING id"),
+        {"pid": key.replace("user_", "", 1), "uid": user.id},
+    ).mappings().first()
+    db.commit()
+    if not deleted:
+        return JSONResponse({"status": "error", "message": "Post not found"}, status_code=404)
+    return {"status": "ok"}
+
+
+@app.get("/feeds/summaries")
+def feed_summaries(
+    request: Request,
+    db: Session = Depends(get_db),
+    postIds: str = Query(""),
+):
+    user = current_user(request, db)
+    user_id = user.id if user else None
+    ids = [x.strip() for x in (postIds or "").split(",") if x.strip()]
+    ids = ids[:80]
+    if not ids:
+        return {"items": []}
+    out = []
+    reactions_col = mongo.get_collection("community_reactions")
+    for pid in ids:
+        comments_count, counts = _post_counts_from_mongo(pid)
+        selected = None
+        if user_id is not None and reactions_col is not None:
+            rr = reactions_col.find_one({"post_id": _mongo_post_id_from_any(pid), "user_id": user_id}, {"reaction": 1})
+            selected = _mongo_reaction_key((rr or {}).get("reaction"))
+        out.append(
+            {
+                "postId": _normalized_post_id(pid),
+                "commentCount": comments_count,
+                "reactions": counts,
+                "selectedReaction": selected,
+            }
+        )
+    return {"items": out}
 
 
 @app.get("/comments")
@@ -1204,7 +1482,10 @@ def run_feed_migrations(db: Session):
     CREATE TABLE IF NOT EXISTS user_profiles (
       user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
       team_id BIGINT REFERENCES teams(id),
+      selected_team_id VARCHAR(64),
+      selected_team_name VARCHAR(64),
       team_change_count INT NOT NULL DEFAULT 0,
+      team_selected_at TIMESTAMPTZ,
       xp BIGINT NOT NULL DEFAULT 0,
       streak_days INT NOT NULL DEFAULT 0,
       season_wins BIGINT NOT NULL DEFAULT 0,
@@ -1212,6 +1493,9 @@ def run_feed_migrations(db: Session):
       badge_count BIGINT NOT NULL DEFAULT 0,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS selected_team_id VARCHAR(64);
+    ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS selected_team_name VARCHAR(64);
+    ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS team_selected_at TIMESTAMPTZ;
 
     CREATE TABLE IF NOT EXISTS game_score_submissions (
       id BIGSERIAL PRIMARY KEY,
@@ -1496,6 +1780,110 @@ def run_feed_migrations(db: Session):
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    CREATE TABLE IF NOT EXISTS water_tracking (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      amount_ml INT NOT NULL CHECK (amount_ml > 0),
+      consumed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      day_key DATE NOT NULL,
+      source VARCHAR(40) NOT NULL DEFAULT 'manual',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_water_tracking_user_day ON water_tracking (user_id, day_key, consumed_at DESC);
+
+    CREATE TABLE IF NOT EXISTS habit_tracking (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      habit_code VARCHAR(120) NOT NULL,
+      value INT NOT NULL DEFAULT 1,
+      day_key DATE NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, habit_code, day_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_habit_tracking_user_day ON habit_tracking (user_id, day_key, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS medicine_tracking (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      medicine_name VARCHAR(200) NOT NULL,
+      dosage VARCHAR(80),
+      timing VARCHAR(80),
+      timings JSONB NOT NULL DEFAULT '[]'::jsonb,
+      taken BOOLEAN NOT NULL DEFAULT FALSE,
+      day_key DATE NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, medicine_name, day_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_medicine_tracking_user_day ON medicine_tracking (user_id, day_key, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS daily_task_tracking (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      task_code VARCHAR(120) NOT NULL,
+      title VARCHAR(240) NOT NULL,
+      completed BOOLEAN NOT NULL DEFAULT FALSE,
+      day_key DATE NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, task_code, day_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_daily_task_tracking_user_day ON daily_task_tracking (user_id, day_key, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS wellness_stats (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      day_key DATE NOT NULL,
+      water_ml BIGINT NOT NULL DEFAULT 0,
+      habits_done INT NOT NULL DEFAULT 0,
+      medicines_taken INT NOT NULL DEFAULT 0,
+      tasks_completed INT NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, day_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_wellness_stats_user_day ON wellness_stats (user_id, day_key DESC);
+
+    CREATE TABLE IF NOT EXISTS user_streaks (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      streak_type VARCHAR(64) NOT NULL,
+      streak_days INT NOT NULL DEFAULT 0,
+      last_active_date DATE,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, streak_type)
+    );
+
+    CREATE TABLE IF NOT EXISTS season_rewards (
+      id BIGSERIAL PRIMARY KEY,
+      season_id VARCHAR(7) NOT NULL,
+      user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+      team_id BIGINT REFERENCES teams(id) ON DELETE SET NULL,
+      reward_code VARCHAR(80) NOT NULL,
+      reward_label VARCHAR(200) NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_season_rewards_user_season ON season_rewards (user_id, season_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS analytics_events (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+      event_name VARCHAR(120) NOT NULL,
+      event_group VARCHAR(64) NOT NULL DEFAULT 'general',
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_analytics_events_user_created ON analytics_events (user_id, created_at DESC);
     """
     db.execute(text(migration_sql))
     for team_name in TEAM_NAMES:
@@ -1523,7 +1911,7 @@ def get_team_membership(request: Request, db: Session = Depends(get_db)):
     row = db.execute(
         text(
             """
-            SELECT up.user_id, up.team_change_count, up.updated_at, t.name
+            SELECT up.user_id, up.team_change_count, up.updated_at, up.team_selected_at, up.selected_team_id, up.selected_team_name, t.name
             FROM user_profiles up
             LEFT JOIN teams t ON up.team_id = t.id
             WHERE up.user_id = :uid
@@ -1533,12 +1921,16 @@ def get_team_membership(request: Request, db: Session = Depends(get_db)):
     ).mappings().first()
     if not row:
         return {"membership": None}
-    team_id = (row["name"] or "").strip().lower().replace(" ", "_")
+    team_id = (row["selected_team_id"] or "").strip().lower()
+    if not team_id:
+        team_id = (row["name"] or "").strip().lower().replace(" ", "_")
+    team_name = (row["selected_team_name"] or row["name"] or "").strip()
     return {
         "membership": {
             "teamId": team_id,
+            "teamName": team_name,
             "teamChangeCount": int(row["team_change_count"] or 0),
-            "joinedAtIso": (row["updated_at"] or datetime.utcnow()).isoformat(),
+            "joinedAtIso": (row["team_selected_at"] or row["updated_at"] or datetime.utcnow()).isoformat(),
             "changeHistory": [],
         }
     }
@@ -1549,7 +1941,19 @@ def post_team_membership(body: dict, request: Request, db: Session = Depends(get
     team_id_raw = (body.get("teamId") or "").strip().lower()
     if not team_id_raw:
         return JSONResponse({"status": "error", "message": "teamId required"}, status_code=400)
-    team_name = team_id_raw.replace("_", " ").title()
+    id_to_name = {
+        "moon_souls": "Moon Souls",
+        "star_hearts": "Star Hearts",
+        "ocean_minds": "Ocean Minds",
+        "sky_sparks": "Sky Sparks",
+        "fire_wings": "Fire Wings",
+        "pink_clouds": "Pink Clouds",
+        "sun_rays": "Sun Rays",
+        "night_dreams": "Night Dreams",
+        "green_aura": "Green Aura",
+        "white_souls": "White Souls",
+    }
+    team_name = id_to_name.get(team_id_raw, team_id_raw.replace("_", " ").title())
     return select_team(TeamSelectBody(teamName=team_name), request, db)
 
 
@@ -1571,22 +1975,45 @@ def select_team(body: TeamSelectBody, request: Request, db: Session = Depends(ge
     db.execute(
         text(
             """
-            INSERT INTO user_profiles (user_id, team_id, team_change_count)
-            VALUES (:uid, :tid, 0)
+            INSERT INTO user_profiles (user_id, team_id, selected_team_id, selected_team_name, team_change_count, team_selected_at)
+            VALUES (:uid, :tid, :selected_team_id, :selected_team_name, 0, NOW())
             ON CONFLICT (user_id)
             DO UPDATE SET
               team_id = EXCLUDED.team_id,
+              selected_team_id = EXCLUDED.selected_team_id,
+              selected_team_name = EXCLUDED.selected_team_name,
               team_change_count = CASE WHEN user_profiles.team_id IS NULL THEN user_profiles.team_change_count ELSE user_profiles.team_change_count + 1 END,
+              team_selected_at = COALESCE(user_profiles.team_selected_at, NOW()),
               updated_at = NOW()
             """
         ),
-        {"uid": user.id, "tid": team["id"]},
+        {
+            "uid": user.id,
+            "tid": team["id"],
+            "selected_team_id": team["name"].strip().lower().replace(" ", "_"),
+            "selected_team_name": team["name"].strip(),
+        },
     )
     db.execute(text("UPDATE teams SET member_count = (SELECT COUNT(*) FROM user_profiles WHERE team_id = teams.id), updated_at = NOW()"))
     db.execute(text("UPDATE team_members SET active = FALSE, left_at = NOW(), updated_at = NOW() WHERE user_id = :uid AND active = TRUE"), {"uid": user.id})
     db.execute(text("INSERT INTO team_members (user_id, team_id, active) VALUES (:uid, :tid, TRUE)"), {"uid": user.id, "tid": team["id"]})
     db.commit()
-    return {"status": "ok", "teamName": team["name"]}
+    return {"status": "ok", "teamName": team["name"], "teamId": team["name"].strip().lower().replace(" ", "_")}
+
+
+@app.post("/teams/change")
+def change_team(body: TeamChangeBody, request: Request, db: Session = Depends(get_db)):
+    return select_team(TeamSelectBody(teamName=body.teamName), request, db)
+
+
+@app.get("/teams/leaderboard")
+def teams_leaderboard_alias(seasonId: Optional[str] = Query(None), limit: int = Query(20), db: Session = Depends(get_db)):
+    return team_leaderboard(seasonId, limit, db)
+
+
+@app.get("/teams/me")
+def teams_me(request: Request, db: Session = Depends(get_db)):
+    return get_team_membership(request, db)
 
 
 @app.post("/scores/submit")
@@ -1819,6 +2246,11 @@ def team_leaderboard(seasonId: Optional[str] = Query(None), limit: int = Query(2
     return {"seasonId": sid, "items": [dict(r) for r in rows]}
 
 
+@app.get("/leaderboard/teams")
+def team_leaderboard_plural(seasonId: Optional[str] = Query(None), limit: int = Query(20), db: Session = Depends(get_db)):
+    return team_leaderboard(seasonId, limit, db)
+
+
 @app.get("/seasons/{season_id}")
 def season_stats(season_id: str, db: Session = Depends(get_db)):
     row = db.execute(text("SELECT * FROM season_stats WHERE season_id = :sid"), {"sid": season_id}).mappings().first()
@@ -1872,11 +2304,41 @@ def sync_queue(body: SyncQueueBatchBody, request: Request, db: Session = Depends
     return {"status": "ok", "results": results}
 
 
+@app.post("/sync/batch")
+def sync_batch(body: SyncQueueBatchBody, request: Request, db: Session = Depends(get_db)):
+    return sync_queue(body, request, db)
+
+
+@app.get("/sync/status")
+def sync_status(request: Request, limit: int = Query(100), db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    rows = db.execute(
+        text(
+            """
+            SELECT idempotency_key, action_type, created_at, response_payload
+            FROM sync_queue_receipts
+            WHERE user_id = :uid
+            ORDER BY created_at DESC
+            LIMIT :lim
+            """
+        ),
+        {"uid": user.id, "lim": min(max(1, limit), 300)},
+    ).mappings().all()
+    return {"status": "ok", "items": [dict(r) for r in rows]}
+
+
 @app.get("/teams/season")
 def team_season_snapshot(seasonId: Optional[str] = Query(None), db: Session = Depends(get_db)):
     sid = seasonId or _season_id()
     data = team_leaderboard(sid, 20, db)
     return {"seasonId": sid, "leaderboard": data.get("items", [])}
+
+
+@app.get("/teams/snapshot")
+def team_snapshot_alias(seasonId: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    return team_season_snapshot(seasonId, db)
 
 
 @app.get("/activity")
@@ -1912,6 +2374,47 @@ def activity_feed(request: Request, limit: int = Query(20), db: Session = Depend
         {"uid": user.id, "lim": lim},
     ).mappings().all()
     return {"items": [{"title": r["title"], "subtitle": r["subtitle"], "createdAt": r["created_at"].isoformat()} for r in pg_rows]}
+
+
+@app.get("/feeds/activity")
+def activity_feed_alias(request: Request, limit: int = Query(20), db: Session = Depends(get_db)):
+    return activity_feed(request, limit, db)
+
+
+@app.post("/events")
+def create_event(body: dict, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    title = str(body.get("title") or body.get("event") or "Activity").strip()[:160]
+    subtitle = str(body.get("subtitle") or body.get("description") or "").strip()[:300]
+    visibility = str(body.get("visibility") or "private").strip().lower()
+    if visibility not in {"private", "global"}:
+        visibility = "private"
+    col = mongo.get_collection("activity_feed")
+    created_at = datetime.utcnow()
+    if col is not None:
+        col.insert_one(
+            {
+                "user_id": user.id,
+                "visibility": visibility,
+                "title": title,
+                "subtitle": subtitle,
+                "kind": str(body.get("kind") or "event"),
+                "created_at": created_at,
+            }
+        )
+    db.execute(
+        text(
+            """
+            INSERT INTO analytics_events (user_id, event_name, event_group, metadata, created_at)
+            VALUES (:uid, :name, :grp, CAST(:meta AS JSONB), :created)
+            """
+        ),
+        {"uid": user.id, "name": title or "event", "grp": "activity", "meta": json.dumps(body), "created": created_at},
+    )
+    db.commit()
+    return {"status": "ok"}
 
 
 @app.get("/users/me/stats")
@@ -1953,6 +2456,275 @@ def my_contributions(request: Request, seasonId: Optional[str] = Query(None), li
         {"uid": user.id, "sid": sid, "lim": min(max(1, limit), 200)},
     ).mappings().all()
     return {"seasonId": sid, "items": [dict(r) for r in rows]}
+
+
+def _refresh_wellness_stats(db: Session, user_id: int, day_key: str):
+    water_total = db.execute(
+        text("SELECT COALESCE(SUM(amount_ml), 0) AS total_ml FROM water_tracking WHERE user_id = :uid AND day_key = :dk"),
+        {"uid": user_id, "dk": day_key},
+    ).mappings().first()
+    habits_done = db.execute(
+        text("SELECT COUNT(*) AS c FROM habit_tracking WHERE user_id = :uid AND day_key = :dk AND value > 0"),
+        {"uid": user_id, "dk": day_key},
+    ).mappings().first()
+    meds_taken = db.execute(
+        text("SELECT COUNT(*) AS c FROM medicine_tracking WHERE user_id = :uid AND day_key = :dk AND taken = TRUE"),
+        {"uid": user_id, "dk": day_key},
+    ).mappings().first()
+    tasks_done = db.execute(
+        text("SELECT COUNT(*) AS c FROM daily_task_tracking WHERE user_id = :uid AND day_key = :dk AND completed = TRUE"),
+        {"uid": user_id, "dk": day_key},
+    ).mappings().first()
+    db.execute(
+        text(
+            """
+            INSERT INTO wellness_stats (user_id, day_key, water_ml, habits_done, medicines_taken, tasks_completed, updated_at)
+            VALUES (:uid, :dk, :water, :habits, :meds, :tasks, NOW())
+            ON CONFLICT (user_id, day_key)
+            DO UPDATE SET
+              water_ml = EXCLUDED.water_ml,
+              habits_done = EXCLUDED.habits_done,
+              medicines_taken = EXCLUDED.medicines_taken,
+              tasks_completed = EXCLUDED.tasks_completed,
+              updated_at = NOW()
+            """
+        ),
+        {
+            "uid": user_id,
+            "dk": day_key,
+            "water": int((water_total or {}).get("total_ml") or 0),
+            "habits": int((habits_done or {}).get("c") or 0),
+            "meds": int((meds_taken or {}).get("c") or 0),
+            "tasks": int((tasks_done or {}).get("c") or 0),
+        },
+    )
+
+
+@app.get("/wellness/water")
+def list_water_tracking(request: Request, dayKey: Optional[str] = Query(None), limit: int = Query(100), db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    dk = (dayKey or _day_key()).strip()
+    rows = db.execute(
+        text(
+            """
+            SELECT id, amount_ml, consumed_at, day_key, source, created_at
+            FROM water_tracking
+            WHERE user_id = :uid AND day_key = :dk
+            ORDER BY consumed_at DESC
+            LIMIT :lim
+            """
+        ),
+        {"uid": user.id, "dk": dk, "lim": min(max(1, limit), 300)},
+    ).mappings().all()
+    return {"dayKey": dk, "items": [dict(r) for r in rows]}
+
+
+@app.post("/wellness/water")
+def create_water_tracking(body: WaterTrackBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    if int(body.amountMl or 0) <= 0 or int(body.amountMl) > 5000:
+        return JSONResponse({"status": "error", "message": "invalid amountMl"}, status_code=400)
+    consumed = _safe_iso_datetime(body.consumedAt, datetime.utcnow())
+    dk = (body.dayKey or consumed.strftime("%Y-%m-%d")).strip()
+    row = db.execute(
+        text(
+            """
+            INSERT INTO water_tracking (user_id, amount_ml, consumed_at, day_key, source)
+            VALUES (:uid, :amt, :consumed, :dk, :source)
+            RETURNING id, amount_ml, consumed_at, day_key, source, created_at
+            """
+        ),
+        {"uid": user.id, "amt": int(body.amountMl), "consumed": consumed, "dk": dk, "source": (body.source or "manual")[:40]},
+    ).mappings().first()
+    _refresh_wellness_stats(db, user.id, dk)
+    db.commit()
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.get("/wellness/habits")
+def list_habit_tracking(request: Request, dayKey: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    dk = (dayKey or _day_key()).strip()
+    rows = db.execute(
+        text(
+            """
+            SELECT id, habit_code, value, metadata, day_key, created_at, updated_at
+            FROM habit_tracking
+            WHERE user_id = :uid AND day_key = :dk
+            ORDER BY updated_at DESC
+            """
+        ),
+        {"uid": user.id, "dk": dk},
+    ).mappings().all()
+    return {"dayKey": dk, "items": [dict(r) for r in rows]}
+
+
+@app.post("/wellness/habits")
+def upsert_habit_tracking(body: HabitTrackBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    code = (body.habitCode or "").strip().lower()
+    if not code:
+        return JSONResponse({"status": "error", "message": "habitCode required"}, status_code=400)
+    dk = (body.dayKey or _day_key()).strip()
+    row = db.execute(
+        text(
+            """
+            INSERT INTO habit_tracking (user_id, habit_code, value, day_key, metadata)
+            VALUES (:uid, :code, :value, :dk, CAST(:meta AS JSONB))
+            ON CONFLICT (user_id, habit_code, day_key)
+            DO UPDATE SET value = EXCLUDED.value, metadata = EXCLUDED.metadata, updated_at = NOW()
+            RETURNING id, habit_code, value, metadata, day_key, created_at, updated_at
+            """
+        ),
+        {"uid": user.id, "code": code, "value": int(body.value or 0), "dk": dk, "meta": json.dumps(body.metadata or {})},
+    ).mappings().first()
+    _refresh_wellness_stats(db, user.id, dk)
+    db.commit()
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.get("/wellness/medicines")
+def list_medicine_tracking(request: Request, dayKey: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    dk = (dayKey or _day_key()).strip()
+    rows = db.execute(
+        text(
+            """
+            SELECT id, medicine_name, dosage, timing, timings, taken, metadata, day_key, created_at, updated_at
+            FROM medicine_tracking
+            WHERE user_id = :uid AND day_key = :dk
+            ORDER BY updated_at DESC
+            """
+        ),
+        {"uid": user.id, "dk": dk},
+    ).mappings().all()
+    return {"dayKey": dk, "items": [dict(r) for r in rows]}
+
+
+@app.post("/wellness/medicines")
+def upsert_medicine_tracking(body: MedicineTrackBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    name = (body.medicineName or "").strip()
+    if not name:
+        return JSONResponse({"status": "error", "message": "medicineName required"}, status_code=400)
+    dk = (body.dayKey or _day_key()).strip()
+    times = [x.strip() for x in (body.timings or []) if str(x).strip()]
+    if not times and (body.timing or "").strip():
+        times = [(body.timing or "").strip()]
+    row = db.execute(
+        text(
+            """
+            INSERT INTO medicine_tracking (user_id, medicine_name, dosage, timing, timings, taken, day_key, metadata)
+            VALUES (:uid, :name, :dosage, :timing, CAST(:timings AS JSONB), :taken, :dk, CAST(:meta AS JSONB))
+            ON CONFLICT (user_id, medicine_name, day_key)
+            DO UPDATE SET
+              dosage = EXCLUDED.dosage,
+              timing = EXCLUDED.timing,
+              timings = EXCLUDED.timings,
+              taken = EXCLUDED.taken,
+              metadata = EXCLUDED.metadata,
+              updated_at = NOW()
+            RETURNING id, medicine_name, dosage, timing, timings, taken, metadata, day_key, created_at, updated_at
+            """
+        ),
+        {
+            "uid": user.id,
+            "name": name,
+            "dosage": body.dosage,
+            "timing": body.timing,
+            "timings": json.dumps(times),
+            "taken": bool(body.taken),
+            "dk": dk,
+            "meta": json.dumps(body.metadata or {}),
+        },
+    ).mappings().first()
+    _refresh_wellness_stats(db, user.id, dk)
+    db.commit()
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.get("/wellness/tasks")
+def list_daily_tasks(request: Request, dayKey: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    dk = (dayKey or _day_key()).strip()
+    rows = db.execute(
+        text(
+            """
+            SELECT id, task_code, title, completed, metadata, day_key, created_at, updated_at
+            FROM daily_task_tracking
+            WHERE user_id = :uid AND day_key = :dk
+            ORDER BY updated_at DESC
+            """
+        ),
+        {"uid": user.id, "dk": dk},
+    ).mappings().all()
+    return {"dayKey": dk, "items": [dict(r) for r in rows]}
+
+
+@app.post("/wellness/tasks")
+def upsert_daily_task(body: DailyTaskTrackBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    code = (body.taskCode or "").strip().lower()
+    title = (body.title or "").strip()
+    if not code or not title:
+        return JSONResponse({"status": "error", "message": "taskCode and title required"}, status_code=400)
+    dk = (body.dayKey or _day_key()).strip()
+    row = db.execute(
+        text(
+            """
+            INSERT INTO daily_task_tracking (user_id, task_code, title, completed, day_key, metadata)
+            VALUES (:uid, :code, :title, :completed, :dk, CAST(:meta AS JSONB))
+            ON CONFLICT (user_id, task_code, day_key)
+            DO UPDATE SET
+              title = EXCLUDED.title,
+              completed = EXCLUDED.completed,
+              metadata = EXCLUDED.metadata,
+              updated_at = NOW()
+            RETURNING id, task_code, title, completed, metadata, day_key, created_at, updated_at
+            """
+        ),
+        {"uid": user.id, "code": code, "title": title, "completed": bool(body.completed), "dk": dk, "meta": json.dumps(body.metadata or {})},
+    ).mappings().first()
+    _refresh_wellness_stats(db, user.id, dk)
+    db.commit()
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.get("/wellness/stats")
+def get_wellness_stats(request: Request, dayKey: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    dk = (dayKey or _day_key()).strip()
+    _refresh_wellness_stats(db, user.id, dk)
+    row = db.execute(
+        text(
+            """
+            SELECT user_id, day_key, water_ml, habits_done, medicines_taken, tasks_completed, created_at, updated_at
+            FROM wellness_stats
+            WHERE user_id = :uid AND day_key = :dk
+            """
+        ),
+        {"uid": user.id, "dk": dk},
+    ).mappings().first()
+    db.commit()
+    return {"status": "ok", "stats": dict(row) if row else {"user_id": user.id, "day_key": dk, "water_ml": 0, "habits_done": 0, "medicines_taken": 0, "tasks_completed": 0}}
 
 # ─────────────────────────────────────────────────────────────
 # DELETE MY DATA — wipes all user data from PostgreSQL
