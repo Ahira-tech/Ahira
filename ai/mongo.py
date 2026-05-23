@@ -59,11 +59,15 @@ def ensure_indexes():
         comments = get_collection("community_comments")
         if comments is not None:
             comments.create_index([("post_id", ASCENDING), ("created_at", ASCENDING)])
+            comments.create_index([("user_id", ASCENDING), ("created_at", DESCENDING)])
+            comments.create_index([("post_id", ASCENDING), ("deleted", ASCENDING), ("created_at", ASCENDING)])
 
         reactions = get_collection("community_reactions")
         if reactions is not None:
             reactions.create_index([("post_id", ASCENDING)])
             reactions.create_index([("post_id", ASCENDING), ("user_id", ASCENDING)], unique=True)
+            reactions.create_index([("user_id", ASCENDING), ("created_at", DESCENDING)])
+            reactions.create_index([("post_id", ASCENDING), ("reaction", ASCENDING)])
 
         activity = get_collection("activity_feed")
         if activity is not None:
@@ -96,6 +100,8 @@ def ensure_indexes():
             col.create_index([("engagement_score", DESCENDING)])
             col.create_index([("trending_score", DESCENDING)])
             col.create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
+            if name == "generated_daily_posts":
+                col.create_index([("language", ASCENDING), ("day_key", ASCENDING)])
     except Exception as e:
         print(f"[MongoDB] ensure_indexes failed: {e}")
 
