@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import requests
-from fastapi import Depends, FastAPI, Query, Request
+from fastapi import Body, Depends, FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -44,6 +44,7 @@ def startup():
     db = next(get_db())
     try:
         run_feed_migrations(db)
+        _ensure_season_one_seed_guard(db)
         print("[Ahira] ✅ Feed migrations applied")
     except Exception as e:
         db.rollback()
@@ -57,6 +58,40 @@ def startup():
         print("[Ahira] ❌ PostgreSQL failed")
     mongo.get_client()
     mongo.ensure_indexes()
+
+
+def _ensure_season_one_seed_guard(db: Session):
+    marker = db.execute(
+        text(
+            """
+            SELECT 1
+            FROM app_preferences
+            WHERE user_id IS NULL AND pref_key = 'season_2026_01_seeded_v1'
+            LIMIT 1
+            """
+        )
+    ).first()
+    if marker:
+        return
+    db.execute(
+        text(
+            """
+            INSERT INTO seasons (season_code, start_date, end_date, is_active)
+            VALUES ('2026-01', DATE '2026-01-01', DATE '2026-01-31', TRUE)
+            ON CONFLICT (season_code) DO NOTHING
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            INSERT INTO app_preferences (user_id, pref_key, pref_value)
+            VALUES (NULL, 'season_2026_01_seeded_v1', '{}'::jsonb)
+            ON CONFLICT (user_id, pref_key) DO NOTHING
+            """
+        )
+    )
+    db.commit()
 
 
 # ── Session helper ────────────────────────────────────────────
@@ -122,7 +157,8 @@ class FeedReactionBody(BaseModel):
 
 
 class TeamSelectBody(BaseModel):
-    teamName: str
+    teamName: Optional[str] = None
+    teamId: Optional[str] = None
 
 
 class GameScoreBody(BaseModel):
@@ -159,7 +195,12 @@ class ReminderUpdateBody(BaseModel):
 
 
 class TeamChangeBody(BaseModel):
-    teamName: str
+    teamName: Optional[str] = None
+    teamId: Optional[str] = None
+
+
+class DeleteAccountBody(BaseModel):
+    password: str
 
 
 class WaterTrackBody(BaseModel):
@@ -192,6 +233,90 @@ class DailyTaskTrackBody(BaseModel):
     completed: bool = False
     dayKey: Optional[str] = None
     metadata: Optional[dict] = None
+
+
+class PlannerTaskBody(BaseModel):
+    title: str
+    description: Optional[str] = None
+    priority: Optional[str] = "normal"
+    dueDate: Optional[str] = None
+    dueTime: Optional[str] = None
+    completed: Optional[bool] = False
+
+
+class UserHabitBody(BaseModel):
+    habitName: str
+    frequency: Optional[str] = "daily"
+    targetCount: Optional[int] = 1
+
+
+class HabitLogBody(BaseModel):
+    completedAt: Optional[str] = None
+
+
+class WellnessLogBody(BaseModel):
+    mood: Optional[str] = None
+    sleepHours: Optional[float] = None
+    stressLevel: Optional[int] = None
+    energyLevel: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class GameProgressBody(BaseModel):
+    gameId: str
+    currentLevel: Optional[int] = 1
+    highScore: Optional[int] = 0
+    totalScore: Optional[int] = 0
+
+
+class GoalBody(BaseModel):
+    goalTitle: str
+    goalDescription: Optional[str] = None
+    targetValue: Optional[int] = 0
+    currentProgress: Optional[int] = 0
+    completed: Optional[bool] = False
+
+
+class GroceryListBody(BaseModel):
+    listName: str
+
+
+class GroceryItemBody(BaseModel):
+    itemName: str
+    quantity: Optional[str] = "1"
+    completed: Optional[bool] = False
+
+
+class MedicineBody(BaseModel):
+    medicineName: str
+    dosage: Optional[str] = None
+    firstTime: Optional[str] = None
+    secondTime: Optional[str] = None
+    thirdTime: Optional[str] = None
+    isCombined: Optional[bool] = False
+    notes: Optional[str] = None
+
+
+class MedicineLogBody(BaseModel):
+    status: str
+    takenAt: Optional[str] = None
+
+
+class GroceryItemUpdateBody(BaseModel):
+    itemName: Optional[str] = None
+    quantity: Optional[str] = None
+    completed: Optional[bool] = None
+
+
+class MedicineUpdateBody(BaseModel):
+    medicineName: Optional[str] = None
+    dosage: Optional[str] = None
+    firstTime: Optional[str] = None
+    secondTime: Optional[str] = None
+    thirdTime: Optional[str] = None
+    isCombined: Optional[bool] = None
+    notes: Optional[str] = None
+    taken: Optional[bool] = None
 
 
 def _safe_language(value: Optional[str]) -> str:
@@ -231,6 +356,84 @@ TEAM_NAMES = [
     "Green Aura",
     "White Souls",
 ]
+
+TEAM_ID_TO_NAME = {
+    name.strip().lower().replace(" ", "_"): name for name in TEAM_NAMES
+}
+TEAM_NAME_TO_ID = {v: k for k, v in TEAM_ID_TO_NAME.items()}
+
+
+def _team_slug(value: Optional[str]) -> str:
+    return (value or "").strip().lower().replace(" ", "_")
+
+
+def _team_name_from_payload(team_name: Optional[str], team_id: Optional[str]) -> Optional[str]:
+    if team_id:
+        return TEAM_ID_TO_NAME.get(_team_slug(team_id))
+    if team_name:
+        raw = team_name.strip()
+        for valid in TEAM_NAMES:
+            if valid.lower() == raw.lower():
+                return valid
+        return TEAM_ID_TO_NAME.get(_team_slug(raw))
+    return None
+
+
+def _team_visuals(team_slug: str):
+    return {
+        "logoUrl": f"ahira://team/{team_slug}/logo",
+        "logo_url": f"ahira://team/{team_slug}/logo",
+        "bannerUrl": f"ahira://team/{team_slug}/banner",
+        "banner_url": f"ahira://team/{team_slug}/banner",
+    }
+
+
+def _profile_payload(db: Session, user):
+    db.execute(
+        text("INSERT INTO user_profiles (user_id) VALUES (:uid) ON CONFLICT (user_id) DO NOTHING"),
+        {"uid": user.id},
+    )
+    db.commit()
+    row = db.execute(
+        text(
+            """
+            SELECT up.user_id, up.team_id, up.team_change_count, up.team_selected_at,
+                   up.selected_team_id, up.selected_team_name, up.created_at, up.updated_at,
+                   t.name AS team_name
+            FROM user_profiles up
+            LEFT JOIN teams t ON up.team_id = t.id
+            WHERE up.user_id = :uid
+            """
+        ),
+        {"uid": user.id},
+    ).mappings().first()
+    if not row:
+        return None, None
+    team_name = (row["selected_team_name"] or row["team_name"] or "").strip()
+    team_slug = (row["selected_team_id"] or _team_slug(team_name)).strip()
+    selected_team = None
+    if team_name and team_slug:
+        selected_team = {
+            "id": team_slug,
+            "teamId": team_slug,
+            "name": team_name,
+            "teamName": team_name,
+            **_team_visuals(team_slug),
+        }
+    profile = {
+        "user_id": row["user_id"],
+        "userId": row["user_id"],
+        "team_id": team_slug or None,
+        "teamId": team_slug or None,
+        "team_name": team_name or None,
+        "teamName": team_name or None,
+        "team_change_count": int(row["team_change_count"] or 0),
+        "teamChangeCount": int(row["team_change_count"] or 0),
+        "team_selected_at": row["team_selected_at"].isoformat() if row["team_selected_at"] else None,
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+    }
+    return profile, selected_team
 
 
 def _season_id(now: Optional[datetime] = None) -> str:
@@ -384,6 +587,47 @@ def _anti_cheat_flags(db: Session, user_id: int, game_id: str, score: int, idemp
         flags.append("duplicate_idempotency_key")
 
     return flags
+
+
+def _refresh_season_team_stats(db: Session, season_code: str):
+    season = db.execute(
+        text("SELECT id FROM seasons WHERE season_code = :sid LIMIT 1"),
+        {"sid": season_code},
+    ).mappings().first()
+    if not season:
+        return
+    sid = int(season["id"])
+    db.execute(
+        text(
+            """
+            INSERT INTO season_team_stats (season_id, team_id, total_points, wins, rank, updated_at, created_at)
+            SELECT :season_id, t.id, COALESCE(SUM(h.points), 0), 0, NULL, NOW(), NOW()
+            FROM teams t
+            LEFT JOIN team_contribution_history h
+              ON h.team_id = t.id AND h.season_id = :season_code
+            GROUP BY t.id
+            ON CONFLICT (season_id, team_id)
+            DO UPDATE SET total_points = EXCLUDED.total_points, updated_at = NOW()
+            """
+        ),
+        {"season_id": sid, "season_code": season_code},
+    )
+    ranked = db.execute(
+        text(
+            """
+            SELECT team_id, total_points,
+                   ROW_NUMBER() OVER (ORDER BY total_points DESC, team_id ASC) AS rnk
+            FROM season_team_stats
+            WHERE season_id = :sid
+            """
+        ),
+        {"sid": sid},
+    ).mappings().all()
+    for row in ranked:
+        db.execute(
+            text("UPDATE season_team_stats SET rank = :rnk, updated_at = NOW() WHERE season_id = :sid AND team_id = :tid"),
+            {"rnk": int(row["rnk"]), "sid": sid, "tid": int(row["team_id"])},
+        )
 
 
 def _require_user(request: Request, db: Session):
@@ -570,6 +814,112 @@ def _ensure_generated_posts(lang: str):
     return docs
 
 
+def _safe_delete_sql(db: Session, sql: str, params: dict, label: str):
+    try:
+        with db.begin_nested():
+            db.execute(text(sql), params)
+    except Exception as exc:
+        print(f"[account_cleanup] skipped {label}: {exc}")
+
+
+def _delete_user_owned_postgres(db: Session, user_id: int, *, delete_user: bool = False):
+    params = {"uid": user_id}
+    user_tables = [
+        "medicine_logs",
+        "medicines",
+        "grocery_items",
+        "grocery_lists",
+        "habit_logs",
+        "user_habits",
+        "planner_tasks",
+        "water_tracking",
+        "habit_tracking",
+        "medicine_tracking",
+        "daily_task_tracking",
+        "wellness_stats",
+        "wellness_logs",
+        "water_logs",
+        "user_goals",
+        "user_streaks",
+        "season_rewards",
+        "scheduled_notifications",
+        "ai_generations",
+        "analytics_events",
+        "notifications_metadata",
+        "app_preferences",
+        "user_settings",
+        "streak_tracking",
+        "achievement_progress",
+        "user_badges",
+        "user_achievements",
+        "anti_cheat_flags",
+        "game_sessions",
+        "game_statistics",
+        "user_game_progress",
+        "team_contribution_history",
+        "contribution_history",
+        "game_score_submissions",
+        "team_members",
+        "sync_queue_receipts",
+        "user_devices",
+        "user_presence",
+        "content_flags",
+        "reminders",
+        "sessions",
+        "user_profiles",
+    ]
+    for table in user_tables:
+        _safe_delete_sql(db, f"DELETE FROM {table} WHERE user_id = :uid", params, table)
+    _safe_delete_sql(
+        db,
+        "DELETE FROM moderation_logs WHERE moderator_user_id = :uid OR target_user_id = :uid",
+        params,
+        "moderation_logs",
+    )
+    db.execute(text("UPDATE teams SET member_count = (SELECT COUNT(*) FROM user_profiles WHERE team_id = teams.id), updated_at = NOW()"))
+    if delete_user:
+        db.query(User).filter(User.id == user_id).delete()
+
+
+def _delete_user_owned_mongo(user_id: int):
+    try:
+        import ai.mongo as mongo_module
+
+        authored_post_ids = []
+        posts_col = mongo_module.get_collection("community_posts")
+        if posts_col is not None:
+            authored_post_ids = [
+                row.get("_id")
+                for row in posts_col.find({"author_user_id": user_id}, {"_id": 1})
+                if row.get("_id") is not None
+            ]
+            posts_col.delete_many({"author_user_id": user_id})
+
+        cleanup = {
+            "reminder_logs": [{"user_id": user_id}],
+            "chat_logs": [{"user_id": user_id}],
+            "mood_logs": [{"user_id": user_id}],
+            "community_comments": [{"user_id": user_id}],
+            "community_reactions": [{"user_id": user_id}],
+            "activity_feed": [{"user_id": user_id}],
+            "generated_content": [{"user_id": user_id}],
+            "engagement_tracking": [{"user_id": user_id}],
+            "analytics_events": [{"user_id": user_id}],
+        }
+        if authored_post_ids:
+            cleanup["community_comments"].append({"post_id": {"$in": authored_post_ids}})
+            cleanup["community_reactions"].append({"post_id": {"$in": authored_post_ids}})
+
+        for collection_name, queries in cleanup.items():
+            col = mongo_module.get_collection(collection_name)
+            if col is None:
+                continue
+            for query in queries:
+                col.delete_many(query)
+    except Exception as e:
+        print(f"[account_cleanup] MongoDB cleanup error: {e}")
+
+
 # ─────────────────────────────────────────────────────────────
 # PAGES
 # ─────────────────────────────────────────────────────────────
@@ -597,9 +947,20 @@ def register(body: RegisterBody, db: Session = Depends(get_db)):
     user = crud.create_user(db, body.name, body.email, body.password)
     if not user:
         return JSONResponse({"status": "error", "message": "Email already registered."}, status_code=409)
+    db.execute(text("INSERT INTO user_profiles (user_id) VALUES (:uid) ON CONFLICT (user_id) DO NOTHING"), {"uid": user.id})
+    db.commit()
 
     token = crud.create_session(db, user.id)
-    resp = JSONResponse({"status": "ok", "user": {"name": user.name, "email": user.email}})
+    profile, selected_team = _profile_payload(db, user)
+    resp = JSONResponse({
+        "status": "ok",
+        "user": {"id": user.id, "name": user.name, "email": user.email},
+        "profile": profile,
+        "selected_team": selected_team,
+        "selectedTeam": selected_team,
+        "team_change_count": profile["team_change_count"] if profile else 0,
+        "teamChangeCount": profile["teamChangeCount"] if profile else 0,
+    })
     resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=SESSION_MAX_DAYS * 24 * 3600)
     return resp
 
@@ -611,7 +972,16 @@ def login(body: LoginBody, db: Session = Depends(get_db)):
         return JSONResponse({"status": "error", "message": "Incorrect email or password."}, status_code=401)
 
     token = crud.create_session(db, user.id)
-    resp = JSONResponse({"status": "ok", "user": {"name": user.name, "email": user.email}})
+    profile, selected_team = _profile_payload(db, user)
+    resp = JSONResponse({
+        "status": "ok",
+        "user": {"id": user.id, "name": user.name, "email": user.email},
+        "profile": profile,
+        "selected_team": selected_team,
+        "selectedTeam": selected_team,
+        "team_change_count": profile["team_change_count"] if profile else 0,
+        "teamChangeCount": profile["teamChangeCount"] if profile else 0,
+    })
     resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=SESSION_MAX_DAYS * 24 * 3600)
     return resp
 
@@ -631,7 +1001,21 @@ def me(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return JSONResponse({"status": "guest"})
-    return JSONResponse({"status": "ok", "user": {"name": user.name, "email": user.email}})
+    profile, selected_team = _profile_payload(db, user)
+    return JSONResponse({
+        "status": "ok",
+        "user": {"id": user.id, "name": user.name, "email": user.email},
+        "profile": profile,
+        "selected_team": selected_team,
+        "selectedTeam": selected_team,
+        "team_change_count": profile["team_change_count"] if profile else 0,
+        "teamChangeCount": profile["teamChangeCount"] if profile else 0,
+    })
+
+
+@app.get("/users/me")
+def users_me(request: Request, db: Session = Depends(get_db)):
+    return me(request, db)
 
 
 @app.post("/session/refresh")
@@ -1375,15 +1759,18 @@ def refresh_generated_posts(language: str = Query("en")):
 
 def run_feed_migrations(db: Session):
     migration_sql = """
-    ALTER TABLE news_posts
-      ALTER COLUMN language TYPE VARCHAR(10);
-
-    ALTER TABLE news_posts
-      ADD COLUMN IF NOT EXISTS is_important BOOLEAN NOT NULL DEFAULT FALSE;
-
-    CREATE INDEX IF NOT EXISTS idx_news_posts_created_at ON news_posts (created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_news_posts_language_created ON news_posts (language, created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_news_posts_type_language_created ON news_posts (language, is_important, created_at DESC);
+    DO $$
+    BEGIN
+      IF to_regclass('public.news_posts') IS NOT NULL THEN
+        ALTER TABLE news_posts
+          ALTER COLUMN language TYPE VARCHAR(10);
+        ALTER TABLE news_posts
+          ADD COLUMN IF NOT EXISTS is_important BOOLEAN NOT NULL DEFAULT FALSE;
+        CREATE INDEX IF NOT EXISTS idx_news_posts_created_at ON news_posts (created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_news_posts_language_created ON news_posts (language, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_news_posts_type_language_created ON news_posts (language, is_important, created_at DESC);
+      END IF;
+    END $$;
 
     CREATE TABLE IF NOT EXISTS ahira_picks (
       id BIGSERIAL PRIMARY KEY,
@@ -1471,6 +1858,8 @@ def run_feed_migrations(db: Session):
     CREATE TABLE IF NOT EXISTS teams (
       id BIGSERIAL PRIMARY KEY,
       name VARCHAR(64) UNIQUE NOT NULL,
+      logo_url TEXT,
+      banner_url TEXT,
       total_points BIGINT NOT NULL DEFAULT 0,
       season_wins BIGINT NOT NULL DEFAULT 0,
       badges JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -1491,8 +1880,12 @@ def run_feed_migrations(db: Session):
       season_wins BIGINT NOT NULL DEFAULT 0,
       contribution_points BIGINT NOT NULL DEFAULT 0,
       badge_count BIGINT NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    ALTER TABLE teams ADD COLUMN IF NOT EXISTS logo_url TEXT;
+    ALTER TABLE teams ADD COLUMN IF NOT EXISTS banner_url TEXT;
+    ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
     ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS selected_team_id VARCHAR(64);
     ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS selected_team_name VARCHAR(64);
     ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS team_selected_at TIMESTAMPTZ;
@@ -1884,12 +2277,220 @@ def run_feed_migrations(db: Session):
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_analytics_events_user_created ON analytics_events (user_id, created_at DESC);
+
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
+    UPDATE users SET password_hash = password WHERE password_hash IS NULL;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '30 days');
+    ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS preferred_language VARCHAR(10) NOT NULL DEFAULT 'en';
+    ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS total_xp BIGINT NOT NULL DEFAULT 0;
+    ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS current_streak INT NOT NULL DEFAULT 0;
+    UPDATE user_profiles SET total_xp = xp WHERE total_xp = 0 AND xp > 0;
+    UPDATE user_profiles SET current_streak = streak_days WHERE current_streak = 0 AND streak_days > 0;
+
+    CREATE TABLE IF NOT EXISTS seasons (
+      id BIGSERIAL PRIMARY KEY,
+      season_code VARCHAR(20) UNIQUE NOT NULL,
+      start_date DATE NOT NULL,
+      end_date DATE NOT NULL,
+      is_active BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_seasons_active ON seasons (is_active, start_date, end_date);
+
+    CREATE TABLE IF NOT EXISTS season_team_stats (
+      id BIGSERIAL PRIMARY KEY,
+      season_id BIGINT NOT NULL REFERENCES seasons(id) ON DELETE CASCADE,
+      team_id BIGINT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+      total_points BIGINT NOT NULL DEFAULT 0,
+      wins BIGINT NOT NULL DEFAULT 0,
+      rank INT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(season_id, team_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_season_team_stats_rank ON season_team_stats (season_id, rank);
+
+    CREATE TABLE IF NOT EXISTS user_game_progress (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      game_id VARCHAR(64) NOT NULL,
+      current_level INT NOT NULL DEFAULT 1,
+      high_score BIGINT NOT NULL DEFAULT 0,
+      total_score BIGINT NOT NULL DEFAULT 0,
+      last_played_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, game_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_game_progress_user ON user_game_progress (user_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS planner_tasks (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      description TEXT,
+      priority VARCHAR(32) NOT NULL DEFAULT 'normal',
+      due_date DATE,
+      due_time VARCHAR(16),
+      completed BOOLEAN NOT NULL DEFAULT FALSE,
+      completed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_planner_tasks_user_created ON planner_tasks (user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS user_habits (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      habit_name VARCHAR(200) NOT NULL,
+      frequency VARCHAR(32) NOT NULL DEFAULT 'daily',
+      target_count INT NOT NULL DEFAULT 1,
+      current_streak INT NOT NULL DEFAULT 0,
+      best_streak INT NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_habits_user_created ON user_habits (user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS habit_logs (
+      id BIGSERIAL PRIMARY KEY,
+      habit_id BIGINT NOT NULL REFERENCES user_habits(id) ON DELETE CASCADE,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_habit_logs_habit_completed ON habit_logs (habit_id, completed_at DESC);
+
+    CREATE TABLE IF NOT EXISTS wellness_logs (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      mood VARCHAR(64),
+      sleep_hours NUMERIC(4,2),
+      stress_level INT,
+      energy_level INT,
+      notes TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_wellness_logs_user_created ON wellness_logs (user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS water_logs (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      amount_ml INT NOT NULL CHECK (amount_ml > 0),
+      logged_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_water_logs_user_logged ON water_logs (user_id, logged_at DESC);
+
+    CREATE TABLE IF NOT EXISTS medicines (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      medicine_name VARCHAR(200) NOT NULL,
+      dosage VARCHAR(80),
+      first_time VARCHAR(32),
+      second_time VARCHAR(32),
+      third_time VARCHAR(32),
+      is_combined BOOLEAN NOT NULL DEFAULT FALSE,
+      notes TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_medicines_user_created ON medicines (user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS medicine_logs (
+      id BIGSERIAL PRIMARY KEY,
+      medicine_id BIGINT NOT NULL REFERENCES medicines(id) ON DELETE CASCADE,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      taken_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      status VARCHAR(32) NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_medicine_logs_med_taken ON medicine_logs (medicine_id, taken_at DESC);
+
+    CREATE TABLE IF NOT EXISTS user_goals (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      goal_title VARCHAR(240) NOT NULL,
+      goal_description TEXT,
+      target_value BIGINT NOT NULL DEFAULT 0,
+      current_progress BIGINT NOT NULL DEFAULT 0,
+      completed BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_goals_user_created ON user_goals (user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS grocery_lists (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      list_name VARCHAR(240) NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_grocery_lists_user_created ON grocery_lists (user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS grocery_items (
+      id BIGSERIAL PRIMARY KEY,
+      list_id BIGINT NOT NULL REFERENCES grocery_lists(id) ON DELETE CASCADE,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      item_name VARCHAR(240) NOT NULL,
+      quantity VARCHAR(64),
+      completed BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_grocery_items_list_created ON grocery_items (list_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS scheduled_notifications (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      notification_type VARCHAR(64) NOT NULL,
+      title VARCHAR(240) NOT NULL,
+      body TEXT NOT NULL,
+      scheduled_for TIMESTAMPTZ NOT NULL,
+      status VARCHAR(32) NOT NULL DEFAULT 'scheduled',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_user_sched ON scheduled_notifications (user_id, scheduled_for DESC);
+
+    CREATE TABLE IF NOT EXISTS ai_generations (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+      feature_type VARCHAR(80) NOT NULL,
+      prompt TEXT NOT NULL,
+      generated_text TEXT NOT NULL,
+      language VARCHAR(10) NOT NULL DEFAULT 'en',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_generations_user_created ON ai_generations (user_id, created_at DESC);
+
+    INSERT INTO seasons (season_code, start_date, end_date, is_active)
+    VALUES ('2026-01', DATE '2026-01-01', DATE '2026-01-31', TRUE)
+    ON CONFLICT (season_code) DO NOTHING;
     """
     db.execute(text(migration_sql))
     for team_name in TEAM_NAMES:
+        team_slug = _team_slug(team_name)
         db.execute(
-            text("INSERT INTO teams (name) VALUES (:name) ON CONFLICT (name) DO NOTHING"),
-            {"name": team_name},
+            text(
+                """
+                INSERT INTO teams (name, logo_url, banner_url)
+                VALUES (:name, :logo, :banner)
+                ON CONFLICT (name)
+                DO UPDATE SET
+                  logo_url = COALESCE(teams.logo_url, EXCLUDED.logo_url),
+                  banner_url = COALESCE(teams.banner_url, EXCLUDED.banner_url),
+                  updated_at = NOW()
+                """
+            ),
+            {
+                "name": team_name,
+                "logo": f"ahira://team/{team_slug}/logo",
+                "banner": f"ahira://team/{team_slug}/banner",
+            },
         )
     db.commit()
 
@@ -1899,8 +2500,25 @@ def run_feed_migrations(db: Session):
 # ─────────────────────────────────────────────────────────────
 @app.get("/teams")
 def list_teams(db: Session = Depends(get_db)):
-    rows = db.execute(text("SELECT id, name, total_points, season_wins, member_count FROM teams ORDER BY name ASC")).mappings().all()
-    return {"teams": [dict(r) for r in rows]}
+    rows = db.execute(text("SELECT id, name, logo_url, banner_url, total_points, season_wins, member_count FROM teams ORDER BY name ASC")).mappings().all()
+    teams = []
+    for row in rows:
+        slug = _team_slug(row["name"])
+        teams.append({
+            "id": slug,
+            "teamId": slug,
+            "numericId": row["id"],
+            "name": row["name"],
+            "teamName": row["name"],
+            "logoUrl": row["logo_url"] or f"ahira://team/{slug}/logo",
+            "logo_url": row["logo_url"] or f"ahira://team/{slug}/logo",
+            "bannerUrl": row["banner_url"] or f"ahira://team/{slug}/banner",
+            "banner_url": row["banner_url"] or f"ahira://team/{slug}/banner",
+            "totalPoints": int(row["total_points"] or 0),
+            "seasonWins": int(row["season_wins"] or 0),
+            "memberCount": int(row["member_count"] or 0),
+        })
+    return {"teams": teams}
 
 
 @app.get("/teams/membership")
@@ -1908,31 +2526,25 @@ def get_team_membership(request: Request, db: Session = Depends(get_db)):
     user, err = _require_user(request, db)
     if err:
         return err
-    row = db.execute(
-        text(
-            """
-            SELECT up.user_id, up.team_change_count, up.updated_at, up.team_selected_at, up.selected_team_id, up.selected_team_name, t.name
-            FROM user_profiles up
-            LEFT JOIN teams t ON up.team_id = t.id
-            WHERE up.user_id = :uid
-            """
-        ),
-        {"uid": user.id},
-    ).mappings().first()
-    if not row:
-        return {"membership": None}
-    team_id = (row["selected_team_id"] or "").strip().lower()
-    if not team_id:
-        team_id = (row["name"] or "").strip().lower().replace(" ", "_")
-    team_name = (row["selected_team_name"] or row["name"] or "").strip()
+    profile, selected_team = _profile_payload(db, user)
+    if not profile or not selected_team:
+        return {
+            "membership": None,
+            "profile": profile,
+            "selected_team": None,
+            "team_change_count": profile["teamChangeCount"] if profile else 0,
+            "teamChangeCount": profile["teamChangeCount"] if profile else 0,
+        }
     return {
         "membership": {
-            "teamId": team_id,
-            "teamName": team_name,
-            "teamChangeCount": int(row["team_change_count"] or 0),
-            "joinedAtIso": (row["team_selected_at"] or row["updated_at"] or datetime.utcnow()).isoformat(),
+            "teamId": selected_team["teamId"],
+            "teamName": selected_team["teamName"],
+            "teamChangeCount": profile["teamChangeCount"],
+            "joinedAtIso": profile["team_selected_at"] or profile["updated_at"] or datetime.utcnow().isoformat(),
             "changeHistory": [],
-        }
+        },
+        "profile": profile,
+        "selected_team": selected_team,
     }
 
 
@@ -1941,20 +2553,7 @@ def post_team_membership(body: dict, request: Request, db: Session = Depends(get
     team_id_raw = (body.get("teamId") or "").strip().lower()
     if not team_id_raw:
         return JSONResponse({"status": "error", "message": "teamId required"}, status_code=400)
-    id_to_name = {
-        "moon_souls": "Moon Souls",
-        "star_hearts": "Star Hearts",
-        "ocean_minds": "Ocean Minds",
-        "sky_sparks": "Sky Sparks",
-        "fire_wings": "Fire Wings",
-        "pink_clouds": "Pink Clouds",
-        "sun_rays": "Sun Rays",
-        "night_dreams": "Night Dreams",
-        "green_aura": "Green Aura",
-        "white_souls": "White Souls",
-    }
-    team_name = id_to_name.get(team_id_raw, team_id_raw.replace("_", " ").title())
-    return select_team(TeamSelectBody(teamName=team_name), request, db)
+    return select_team(TeamSelectBody(teamId=team_id_raw), request, db)
 
 
 @app.post("/teams/select")
@@ -1962,13 +2561,33 @@ def select_team(body: TeamSelectBody, request: Request, db: Session = Depends(ge
     user, err = _require_user(request, db)
     if err:
         return err
-    team = db.execute(text("SELECT id, name FROM teams WHERE name = :name"), {"name": body.teamName.strip()}).mappings().first()
+    team_name = _team_name_from_payload(body.teamName, body.teamId)
+    if not team_name:
+        return JSONResponse({"status": "error", "message": "Invalid team name."}, status_code=400)
+    team = db.execute(text("SELECT id, name FROM teams WHERE name = :name"), {"name": team_name}).mappings().first()
     if not team:
         return JSONResponse({"status": "error", "message": "Invalid team name."}, status_code=400)
 
     profile = db.execute(text("SELECT team_id, team_change_count FROM user_profiles WHERE user_id = :uid"), {"uid": user.id}).mappings().first()
-    if profile and profile["team_id"] == team["id"]:
-        return {"status": "ok", "message": "Team unchanged", "teamName": team["name"]}
+    if profile and profile["team_id"] is not None and int(profile["team_id"]) == int(team["id"]):
+        profile_payload, selected_team = _profile_payload(db, user)
+        return {
+            "status": "ok",
+            "message": "Team unchanged",
+            "teamName": team["name"],
+            "teamId": _team_slug(team["name"]),
+            "membership": {
+                "teamId": _team_slug(team["name"]),
+                "teamName": team["name"],
+                "teamChangeCount": profile_payload["teamChangeCount"] if profile_payload else 0,
+                "joinedAtIso": profile_payload["team_selected_at"] if profile_payload else datetime.utcnow().isoformat(),
+                "changeHistory": [],
+            },
+            "profile": profile_payload,
+            "selected_team": selected_team,
+            "team_change_count": profile_payload["teamChangeCount"] if profile_payload else 0,
+            "teamChangeCount": profile_payload["teamChangeCount"] if profile_payload else 0,
+        }
     if profile and profile["team_id"] is not None and int(profile["team_change_count"] or 0) >= 3:
         return JSONResponse({"status": "error", "message": "Team change limit reached (3 lifetime)."}, status_code=400)
 
@@ -1998,12 +2617,28 @@ def select_team(body: TeamSelectBody, request: Request, db: Session = Depends(ge
     db.execute(text("UPDATE team_members SET active = FALSE, left_at = NOW(), updated_at = NOW() WHERE user_id = :uid AND active = TRUE"), {"uid": user.id})
     db.execute(text("INSERT INTO team_members (user_id, team_id, active) VALUES (:uid, :tid, TRUE)"), {"uid": user.id, "tid": team["id"]})
     db.commit()
-    return {"status": "ok", "teamName": team["name"], "teamId": team["name"].strip().lower().replace(" ", "_")}
+    profile, selected_team = _profile_payload(db, user)
+    return {
+        "status": "ok",
+        "teamName": team["name"],
+        "teamId": _team_slug(team["name"]),
+        "membership": {
+            "teamId": _team_slug(team["name"]),
+            "teamName": team["name"],
+            "teamChangeCount": profile["teamChangeCount"] if profile else 0,
+            "joinedAtIso": profile["team_selected_at"] if profile else datetime.utcnow().isoformat(),
+            "changeHistory": [],
+        },
+        "profile": profile,
+        "selected_team": selected_team,
+        "team_change_count": profile["teamChangeCount"] if profile else 0,
+        "teamChangeCount": profile["teamChangeCount"] if profile else 0,
+    }
 
 
 @app.post("/teams/change")
 def change_team(body: TeamChangeBody, request: Request, db: Session = Depends(get_db)):
-    return select_team(TeamSelectBody(teamName=body.teamName), request, db)
+    return select_team(TeamSelectBody(teamName=body.teamName, teamId=body.teamId), request, db)
 
 
 @app.get("/teams/leaderboard")
@@ -2160,6 +2795,7 @@ def submit_score(body: GameScoreBody, request: Request, db: Session = Depends(ge
             ),
             {"uid": user.id, "sidb": inserted["id"], "flag": flag, "meta": '{"game":"%s"}' % game_id},
         )
+    _refresh_season_team_stats(db, sid)
     db.commit()
 
     return {"status": "ok", "submissionId": inserted["id"], "suspicious": len(flags) > 0, "antiCheatFlags": flags}
@@ -2191,7 +2827,13 @@ def list_game_scores(limit: int = Query(50), request: Request = None, db: Sessio
 
 
 @app.get("/leaderboard/personal")
-def personal_leaderboard(period: str = Query("all"), gameId: Optional[str] = Query(None), limit: int = Query(50), db: Session = Depends(get_db)):
+def personal_leaderboard(
+    request: Request,
+    period: str = Query("all"),
+    gameId: Optional[str] = Query(None),
+    limit: int = Query(50),
+    db: Session = Depends(get_db),
+):
     lim = _safe_limit(limit)
     if period == "weekly":
         where_time = "AND created_at > NOW() - INTERVAL '7 days'"
@@ -2210,27 +2852,144 @@ def personal_leaderboard(period: str = Query("all"), gameId: Optional[str] = Que
     """
     params = {"lim": lim, "sid": _season_id(), "gid": (gameId or "").strip().lower()}
     rows = db.execute(text(sql), params).mappings().all()
-    return {"items": [dict(r) for r in rows]}
+    items = []
+    for index, row in enumerate(rows, start=1):
+        items.append({
+            "rank": index,
+            "userId": row["user_id"],
+            "username": row["username"],
+            "totalScore": int(row["total_score"] or 0),
+            "total_score": int(row["total_score"] or 0),
+            "personalPoints": int(row["total_score"] or 0),
+            "totalXp": int(row["total_xp"] or 0),
+        })
+
+    player = None
+    user = current_user(request, db)
+    if user:
+        total_row = db.execute(
+            text(
+                f"""
+                SELECT
+                  COALESCE(SUM(score), 0) AS personal_points,
+                  COALESCE(SUM(contribution_points), 0) AS contribution_points
+                FROM game_score_submissions
+                WHERE user_id = :uid {where_time} {game_clause}
+                """
+            ),
+            {**params, "uid": user.id},
+        ).mappings().first()
+        rank_row = db.execute(
+            text(
+                f"""
+                WITH totals AS (
+                  SELECT user_id, COALESCE(SUM(score), 0) AS total_score
+                  FROM game_score_submissions
+                  WHERE 1=1 {where_time} {game_clause}
+                  GROUP BY user_id
+                ),
+                ranked AS (
+                  SELECT user_id, RANK() OVER (ORDER BY total_score DESC) AS rank
+                  FROM totals
+                )
+                SELECT rank FROM ranked WHERE user_id = :uid
+                """
+            ),
+            {**params, "uid": user.id},
+        ).mappings().first()
+        badge_rows = db.execute(
+            text(
+                """
+                SELECT badge_id, unlocked_at
+                FROM user_badges
+                WHERE user_id = :uid
+                ORDER BY unlocked_at DESC
+                LIMIT 12
+                """
+            ),
+            {"uid": user.id},
+        ).mappings().all()
+        player = {
+            "playerRank": int(rank_row["rank"]) if rank_row and rank_row["rank"] is not None else None,
+            "rank": int(rank_row["rank"]) if rank_row and rank_row["rank"] is not None else None,
+            "personalPoints": int(total_row["personal_points"] or 0) if total_row else 0,
+            "contributionPoints": int(total_row["contribution_points"] or 0) if total_row else 0,
+            "badges": [dict(r) for r in badge_rows],
+        }
+    return {"items": items, "player": player}
 
 
 @app.get("/leaderboard/team")
 def team_leaderboard(seasonId: Optional[str] = Query(None), limit: int = Query(20), db: Session = Depends(get_db)):
     sid = seasonId or _season_id()
     lim = min(max(1, limit), 20)
+    _refresh_season_team_stats(db, sid)
     rows = db.execute(
         text(
             """
-            SELECT t.id, t.name, COALESCE(SUM(h.points), 0) AS season_points
+            SELECT
+              t.id,
+              t.name,
+              t.logo_url,
+              t.banner_url,
+              t.season_wins,
+              COALESCE(st.total_points, 0) AS season_points,
+              COALESCE(st.rank, 0) AS cached_rank
             FROM teams t
-            LEFT JOIN team_contribution_history h
-              ON h.team_id = t.id AND h.season_id = :sid
-            GROUP BY t.id, t.name
+            LEFT JOIN seasons s ON s.season_code = :sid
+            LEFT JOIN season_team_stats st
+              ON st.team_id = t.id AND st.season_id = s.id
             ORDER BY season_points DESC, t.name ASC
             LIMIT :lim
             """
         ),
         {"sid": sid, "lim": lim},
     ).mappings().all()
+    items = []
+    for index, row in enumerate(rows, start=1):
+        slug = _team_slug(row["name"])
+        contributors = db.execute(
+            text(
+                """
+                SELECT user_id, username, COALESCE(SUM(contribution_points), 0) AS points
+                FROM game_score_submissions
+                WHERE season_id = :sid AND team_id = :tid
+                GROUP BY user_id, username
+                ORDER BY points DESC, username ASC
+                LIMIT 3
+                """
+            ),
+            {"sid": sid, "tid": row["id"]},
+        ).mappings().all()
+        points = int(row["season_points"] or 0)
+        item = {
+            "rank": index,
+            "id": slug,
+            "teamId": slug,
+            "team_id": slug,
+            "numericId": row["id"],
+            "name": row["name"],
+            "teamName": row["name"],
+            "points": points,
+            "totalPoints": points,
+            "seasonPoints": points,
+            "season_points": points,
+            "wins": int(row["season_wins"] or 0),
+            "seasonWins": int(row["season_wins"] or 0),
+            "logoUrl": row["logo_url"] or f"ahira://team/{slug}/logo",
+            "logo_url": row["logo_url"] or f"ahira://team/{slug}/logo",
+            "bannerUrl": row["banner_url"] or f"ahira://team/{slug}/banner",
+            "banner_url": row["banner_url"] or f"ahira://team/{slug}/banner",
+            "topContributors": [
+                {
+                    "userId": r["user_id"],
+                    "username": r["username"],
+                    "points": int(r["points"] or 0),
+                }
+                for r in contributors
+            ],
+        }
+        items.append(item)
     db.execute(
         text(
             """
@@ -2240,10 +2999,10 @@ def team_leaderboard(seasonId: Optional[str] = Query(None), limit: int = Query(2
             DO UPDATE SET payload = EXCLUDED.payload, generated_at = NOW(), updated_at = NOW()
             """
         ),
-        {"sid": sid, "payload": str([dict(r) for r in rows]).replace("'", '"')},
+        {"sid": sid, "payload": json.dumps(items)},
     )
     db.commit()
-    return {"seasonId": sid, "items": [dict(r) for r in rows]}
+    return {"seasonId": sid, "items": items, "leaderboard": items}
 
 
 @app.get("/leaderboard/teams")
@@ -2726,6 +3485,435 @@ def get_wellness_stats(request: Request, dayKey: Optional[str] = Query(None), db
     db.commit()
     return {"status": "ok", "stats": dict(row) if row else {"user_id": user.id, "day_key": dk, "water_ml": 0, "habits_done": 0, "medicines_taken": 0, "tasks_completed": 0}}
 
+
+@app.get("/planner/tasks")
+def list_planner_tasks(request: Request, limit: int = Query(100), db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    rows = db.execute(
+        text("SELECT * FROM planner_tasks WHERE user_id = :uid ORDER BY created_at DESC LIMIT :lim"),
+        {"uid": user.id, "lim": min(max(1, limit), 500)},
+    ).mappings().all()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.post("/planner/tasks")
+def create_planner_task(body: PlannerTaskBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    title = (body.title or "").strip()
+    if not title:
+        return JSONResponse({"status": "error", "message": "title required"}, status_code=400)
+    completed_at = datetime.utcnow() if bool(body.completed) else None
+    row = db.execute(
+        text(
+            """
+            INSERT INTO planner_tasks (user_id, title, description, priority, due_date, due_time, completed, completed_at)
+            VALUES (:uid, :title, :description, :priority, :due_date, :due_time, :completed, :completed_at)
+            RETURNING *
+            """
+        ),
+        {
+            "uid": user.id,
+            "title": title,
+            "description": body.description,
+            "priority": (body.priority or "normal")[:32],
+            "due_date": body.dueDate,
+            "due_time": body.dueTime,
+            "completed": bool(body.completed),
+            "completed_at": completed_at,
+        },
+    ).mappings().first()
+    db.commit()
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.post("/games/progress")
+def upsert_game_progress(body: GameProgressBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    gid = (body.gameId or "").strip().lower()
+    if not gid:
+        return JSONResponse({"status": "error", "message": "gameId required"}, status_code=400)
+    row = db.execute(
+        text(
+            """
+            INSERT INTO user_game_progress (user_id, game_id, current_level, high_score, total_score, last_played_at)
+            VALUES (:uid, :gid, :level, :high_score, :total_score, NOW())
+            ON CONFLICT (user_id, game_id)
+            DO UPDATE SET
+              current_level = GREATEST(user_game_progress.current_level, EXCLUDED.current_level),
+              high_score = GREATEST(user_game_progress.high_score, EXCLUDED.high_score),
+              total_score = GREATEST(user_game_progress.total_score, EXCLUDED.total_score),
+              last_played_at = NOW(),
+              updated_at = NOW()
+            RETURNING *
+            """
+        ),
+        {
+            "uid": user.id,
+            "gid": gid,
+            "level": int(body.currentLevel or 1),
+            "high_score": int(body.highScore or 0),
+            "total_score": int(body.totalScore or 0),
+        },
+    ).mappings().first()
+    db.commit()
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.get("/games/progress")
+def list_game_progress(request: Request, gameId: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    if gameId:
+        row = db.execute(
+            text("SELECT * FROM user_game_progress WHERE user_id = :uid AND game_id = :gid"),
+            {"uid": user.id, "gid": gameId.strip().lower()},
+        ).mappings().first()
+        return {"item": dict(row) if row else None}
+    rows = db.execute(
+        text("SELECT * FROM user_game_progress WHERE user_id = :uid ORDER BY updated_at DESC"),
+        {"uid": user.id},
+    ).mappings().all()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.get("/habits")
+def list_user_habits(request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    rows = db.execute(text("SELECT * FROM user_habits WHERE user_id = :uid ORDER BY created_at DESC"), {"uid": user.id}).mappings().all()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.post("/habits")
+def create_user_habit(body: UserHabitBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    name = (body.habitName or "").strip()
+    if not name:
+        return JSONResponse({"status": "error", "message": "habitName required"}, status_code=400)
+    row = db.execute(
+        text(
+            """
+            INSERT INTO user_habits (user_id, habit_name, frequency, target_count)
+            VALUES (:uid, :name, :frequency, :target)
+            RETURNING *
+            """
+        ),
+        {"uid": user.id, "name": name, "frequency": (body.frequency or "daily")[:32], "target": max(1, int(body.targetCount or 1))},
+    ).mappings().first()
+    db.commit()
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.post("/habits/{habit_id}/logs")
+def create_habit_log(habit_id: int, body: HabitLogBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    habit = db.execute(text("SELECT id FROM user_habits WHERE id = :hid AND user_id = :uid"), {"hid": habit_id, "uid": user.id}).first()
+    if not habit:
+        return JSONResponse({"status": "error", "message": "Habit not found"}, status_code=404)
+    completed_at = _safe_iso_datetime(body.completedAt, datetime.utcnow())
+    row = db.execute(
+        text("INSERT INTO habit_logs (habit_id, user_id, completed_at) VALUES (:hid, :uid, :completed_at) RETURNING *"),
+        {"hid": habit_id, "uid": user.id, "completed_at": completed_at},
+    ).mappings().first()
+    db.execute(text("UPDATE user_habits SET current_streak = current_streak + 1, best_streak = GREATEST(best_streak, current_streak + 1), updated_at = NOW() WHERE id = :hid"), {"hid": habit_id})
+    db.commit()
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.get("/wellness/logs")
+def list_wellness_logs(request: Request, limit: int = Query(100), db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    rows = db.execute(text("SELECT * FROM wellness_logs WHERE user_id = :uid ORDER BY created_at DESC LIMIT :lim"), {"uid": user.id, "lim": min(max(1, limit), 500)}).mappings().all()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.post("/wellness/logs")
+def create_wellness_log(body: WellnessLogBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    row = db.execute(
+        text(
+            """
+            INSERT INTO wellness_logs (user_id, mood, sleep_hours, stress_level, energy_level, notes)
+            VALUES (:uid, :mood, :sleep_hours, :stress_level, :energy_level, :notes)
+            RETURNING *
+            """
+        ),
+        {
+            "uid": user.id,
+            "mood": body.mood,
+            "sleep_hours": body.sleepHours,
+            "stress_level": body.stressLevel,
+            "energy_level": body.energyLevel,
+            "notes": body.notes,
+        },
+    ).mappings().first()
+    db.commit()
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.get("/medicines")
+def list_medicines(request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    rows = db.execute(text("SELECT * FROM medicines WHERE user_id = :uid ORDER BY created_at DESC"), {"uid": user.id}).mappings().all()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.post("/medicines")
+def create_medicine(body: MedicineBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    name = (body.medicineName or "").strip()
+    if not name:
+        return JSONResponse({"status": "error", "message": "medicineName required"}, status_code=400)
+    row = db.execute(
+        text(
+            """
+            INSERT INTO medicines (user_id, medicine_name, dosage, first_time, second_time, third_time, is_combined, notes)
+            VALUES (:uid, :name, :dosage, :first_time, :second_time, :third_time, :is_combined, :notes)
+            RETURNING *
+            """
+        ),
+        {
+            "uid": user.id,
+            "name": name,
+            "dosage": body.dosage,
+            "first_time": body.firstTime,
+            "second_time": body.secondTime,
+            "third_time": body.thirdTime,
+            "is_combined": bool(body.isCombined),
+            "notes": body.notes,
+        },
+    ).mappings().first()
+    db.commit()
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.post("/medicines/{medicine_id}/logs")
+def create_medicine_log(medicine_id: int, body: MedicineLogBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    med = db.execute(text("SELECT id FROM medicines WHERE id = :mid AND user_id = :uid"), {"mid": medicine_id, "uid": user.id}).first()
+    if not med:
+        return JSONResponse({"status": "error", "message": "Medicine not found"}, status_code=404)
+    status = (body.status or "").strip().lower()
+    if status not in {"taken", "skipped", "snoozed"}:
+        return JSONResponse({"status": "error", "message": "invalid status"}, status_code=400)
+    taken_at = _safe_iso_datetime(body.takenAt, datetime.utcnow())
+    row = db.execute(
+        text("INSERT INTO medicine_logs (medicine_id, user_id, taken_at, status) VALUES (:mid, :uid, :taken_at, :status) RETURNING *"),
+        {"mid": medicine_id, "uid": user.id, "taken_at": taken_at, "status": status},
+    ).mappings().first()
+    db.commit()
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.put("/medicines/{medicine_id}")
+def update_medicine(medicine_id: int, body: MedicineUpdateBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    exists = db.execute(text("SELECT id FROM medicines WHERE id = :mid AND user_id = :uid"), {"mid": medicine_id, "uid": user.id}).first()
+    if not exists:
+        return JSONResponse({"status": "error", "message": "Medicine not found"}, status_code=404)
+    row = db.execute(
+        text(
+            """
+            UPDATE medicines
+            SET medicine_name = COALESCE(:name, medicine_name),
+                dosage = COALESCE(:dosage, dosage),
+                first_time = COALESCE(:first_time, first_time),
+                second_time = COALESCE(:second_time, second_time),
+                third_time = COALESCE(:third_time, third_time),
+                is_combined = COALESCE(:is_combined, is_combined),
+                notes = COALESCE(:notes, notes),
+                updated_at = NOW()
+            WHERE id = :mid AND user_id = :uid
+            RETURNING *
+            """
+        ),
+        {
+            "name": body.medicineName,
+            "dosage": body.dosage,
+            "first_time": body.firstTime,
+            "second_time": body.secondTime,
+            "third_time": body.thirdTime,
+            "is_combined": body.isCombined,
+            "notes": body.notes,
+            "mid": medicine_id,
+            "uid": user.id,
+        },
+    ).mappings().first()
+    if body.taken is not None:
+        db.execute(
+            text("INSERT INTO medicine_logs (medicine_id, user_id, taken_at, status) VALUES (:mid, :uid, NOW(), :status)"),
+            {"mid": medicine_id, "uid": user.id, "status": "taken" if body.taken else "skipped"},
+        )
+    db.commit()
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.delete("/medicines/{medicine_id}")
+def delete_medicine_row(medicine_id: int, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    row = db.execute(text("DELETE FROM medicines WHERE id = :mid AND user_id = :uid RETURNING id"), {"mid": medicine_id, "uid": user.id}).mappings().first()
+    db.commit()
+    if not row:
+        return JSONResponse({"status": "error", "message": "Medicine not found"}, status_code=404)
+    return {"status": "ok"}
+
+
+@app.get("/goals")
+def list_goals(request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    rows = db.execute(text("SELECT * FROM user_goals WHERE user_id = :uid ORDER BY created_at DESC"), {"uid": user.id}).mappings().all()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.post("/goals")
+def create_goal(body: GoalBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    title = (body.goalTitle or "").strip()
+    if not title:
+        return JSONResponse({"status": "error", "message": "goalTitle required"}, status_code=400)
+    row = db.execute(
+        text(
+            """
+            INSERT INTO user_goals (user_id, goal_title, goal_description, target_value, current_progress, completed)
+            VALUES (:uid, :title, :description, :target_value, :current_progress, :completed)
+            RETURNING *
+            """
+        ),
+        {
+            "uid": user.id,
+            "title": title,
+            "description": body.goalDescription,
+            "target_value": int(body.targetValue or 0),
+            "current_progress": int(body.currentProgress or 0),
+            "completed": bool(body.completed),
+        },
+    ).mappings().first()
+    db.commit()
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.get("/grocery/lists")
+def list_grocery_lists(request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    rows = db.execute(text("SELECT * FROM grocery_lists WHERE user_id = :uid ORDER BY created_at DESC"), {"uid": user.id}).mappings().all()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.post("/grocery/lists")
+def create_grocery_list(body: GroceryListBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    name = (body.listName or "").strip()
+    if not name:
+        return JSONResponse({"status": "error", "message": "listName required"}, status_code=400)
+    row = db.execute(text("INSERT INTO grocery_lists (user_id, list_name) VALUES (:uid, :name) RETURNING *"), {"uid": user.id, "name": name}).mappings().first()
+    db.commit()
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.get("/grocery/lists/{list_id}/items")
+def list_grocery_items(list_id: int, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    rows = db.execute(text("SELECT * FROM grocery_items WHERE user_id = :uid AND list_id = :lid ORDER BY created_at DESC"), {"uid": user.id, "lid": list_id}).mappings().all()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.post("/grocery/lists/{list_id}/items")
+def create_grocery_item(list_id: int, body: GroceryItemBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    parent = db.execute(text("SELECT id FROM grocery_lists WHERE id = :lid AND user_id = :uid"), {"lid": list_id, "uid": user.id}).first()
+    if not parent:
+        return JSONResponse({"status": "error", "message": "List not found"}, status_code=404)
+    name = (body.itemName or "").strip()
+    if not name:
+        return JSONResponse({"status": "error", "message": "itemName required"}, status_code=400)
+    row = db.execute(
+        text(
+            """
+            INSERT INTO grocery_items (list_id, user_id, item_name, quantity, completed)
+            VALUES (:lid, :uid, :name, :quantity, :completed)
+            RETURNING *
+            """
+        ),
+        {"lid": list_id, "uid": user.id, "name": name, "quantity": body.quantity, "completed": bool(body.completed)},
+    ).mappings().first()
+    db.commit()
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.put("/grocery/items/{item_id}")
+def update_grocery_item(item_id: int, body: GroceryItemUpdateBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    row = db.execute(
+        text(
+            """
+            UPDATE grocery_items
+            SET item_name = COALESCE(:name, item_name),
+                quantity = COALESCE(:quantity, quantity),
+                completed = COALESCE(:completed, completed),
+                updated_at = NOW()
+            WHERE id = :iid AND user_id = :uid
+            RETURNING *
+            """
+        ),
+        {"name": body.itemName, "quantity": body.quantity, "completed": body.completed, "iid": item_id, "uid": user.id},
+    ).mappings().first()
+    db.commit()
+    if not row:
+        return JSONResponse({"status": "error", "message": "Item not found"}, status_code=404)
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.delete("/grocery/items/{item_id}")
+def delete_grocery_item(item_id: int, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    row = db.execute(text("DELETE FROM grocery_items WHERE id = :iid AND user_id = :uid RETURNING id"), {"iid": item_id, "uid": user.id}).mappings().first()
+    db.commit()
+    if not row:
+        return JSONResponse({"status": "error", "message": "Item not found"}, status_code=404)
+    return {"status": "ok"}
+
 # ─────────────────────────────────────────────────────────────
 # DELETE MY DATA — wipes all user data from PostgreSQL
 # ─────────────────────────────────────────────────────────────
@@ -2735,42 +3923,9 @@ def delete_my_data(request: Request, db: Session = Depends(get_db)):
     if not user:
         return JSONResponse({"status": "error", "message": "Not logged in."}, status_code=401)
 
-    db.query(ReminderModel).filter(ReminderModel.user_id == user.id).delete()
-    db.query(UserSession).filter(UserSession.user_id == user.id).delete()
-    db.execute(text("DELETE FROM game_score_submissions WHERE user_id = :uid"), {"uid": user.id})
-    db.execute(text("DELETE FROM team_contribution_history WHERE user_id = :uid"), {"uid": user.id})
-    db.execute(text("DELETE FROM user_badges WHERE user_id = :uid"), {"uid": user.id})
-    db.execute(text("DELETE FROM user_achievements WHERE user_id = :uid"), {"uid": user.id})
-    db.execute(text("DELETE FROM sync_queue_receipts WHERE user_id = :uid"), {"uid": user.id})
-    db.execute(text("DELETE FROM user_profiles WHERE user_id = :uid"), {"uid": user.id})
+    _delete_user_owned_postgres(db, user.id, delete_user=False)
     db.commit()
-
-    try:
-        import ai.mongo as mongo_module
-
-        col = mongo_module.get_collection("reminder_logs")
-        if col is not None:
-            col.delete_many({"user_id": user.id})
-        col2 = mongo_module.get_collection("chat_logs")
-        if col2 is not None:
-            col2.delete_many({"user_id": user.id})
-        col3 = mongo_module.get_collection("mood_logs")
-        if col3 is not None:
-            col3.delete_many({"user_id": user.id})
-        col4 = mongo_module.get_collection("community_posts")
-        if col4 is not None:
-            col4.delete_many({"author_user_id": user.id})
-        col5 = mongo_module.get_collection("community_comments")
-        if col5 is not None:
-            col5.delete_many({"user_id": user.id})
-        col6 = mongo_module.get_collection("community_reactions")
-        if col6 is not None:
-            col6.delete_many({"user_id": user.id})
-        col7 = mongo_module.get_collection("activity_feed")
-        if col7 is not None:
-            col7.delete_many({"user_id": user.id})
-    except Exception as e:
-        print(f"[delete_my_data] MongoDB cleanup error: {e}")
+    _delete_user_owned_mongo(user.id)
 
     resp = JSONResponse({"status": "ok", "message": "All data deleted."})
     resp.delete_cookie(SESSION_COOKIE)
@@ -2778,37 +3933,18 @@ def delete_my_data(request: Request, db: Session = Depends(get_db)):
 
 
 @app.delete("/delete_account")
-def delete_account(request: Request, db: Session = Depends(get_db)):
+def delete_account(body: DeleteAccountBody, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return JSONResponse({"status": "error", "message": "Not logged in."}, status_code=401)
+    if not user.check_password(body.password):
+        return JSONResponse({"status": "error", "message": "Password confirmation failed."}, status_code=403)
 
     user_id = user.id
 
-    db.query(ReminderModel).filter(ReminderModel.user_id == user_id).delete()
-    db.query(UserSession).filter(UserSession.user_id == user_id).delete()
-    db.execute(text("DELETE FROM game_score_submissions WHERE user_id = :uid"), {"uid": user_id})
-    db.execute(text("DELETE FROM team_contribution_history WHERE user_id = :uid"), {"uid": user_id})
-    db.execute(text("DELETE FROM user_badges WHERE user_id = :uid"), {"uid": user_id})
-    db.execute(text("DELETE FROM user_achievements WHERE user_id = :uid"), {"uid": user_id})
-    db.execute(text("DELETE FROM sync_queue_receipts WHERE user_id = :uid"), {"uid": user_id})
-    db.execute(text("DELETE FROM user_profiles WHERE user_id = :uid"), {"uid": user_id})
-    db.query(User).filter(User.id == user_id).delete()
-
+    _delete_user_owned_postgres(db, user_id, delete_user=True)
     db.commit()
-
-    try:
-        import ai.mongo as mongo_module
-
-        for collection_name in ["reminder_logs", "chat_logs", "mood_logs", "community_comments", "community_reactions", "activity_feed"]:
-            col = mongo_module.get_collection(collection_name)
-            if col is not None:
-                col.delete_many({"user_id": user_id})
-        posts_col = mongo_module.get_collection("community_posts")
-        if posts_col is not None:
-            posts_col.delete_many({"author_user_id": user_id})
-    except Exception as e:
-        print(f"[delete_account] MongoDB cleanup error: {e}")
+    _delete_user_owned_mongo(user_id)
 
     resp = JSONResponse({"status": "ok", "message": "Account permanently deleted."})
     resp.delete_cookie(SESSION_COOKIE)
