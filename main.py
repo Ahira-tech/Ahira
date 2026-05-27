@@ -8,8 +8,12 @@ import os
 import json
 import hashlib
 import uuid
+import secrets
+import smtplib
+import ssl
 from datetime import datetime, timedelta
 from typing import Optional
+from email.message import EmailMessage
 
 import requests
 from fastapi import Body, Depends, FastAPI, Query, Request
@@ -125,6 +129,11 @@ class LoginBody(BaseModel):
     password: str
 
 
+class ChatBody(BaseModel):
+    message: str
+    history: list[dict] = []
+
+
 class ReminderBody(BaseModel):
     task: str
     date: Optional[str] = None
@@ -144,6 +153,8 @@ class FeedCreateBody(BaseModel):
     category: Optional[str] = "Daily Life ☕"
     mood: Optional[str] = "emotional"
     anonymousIdentity: Optional[str] = "☁️ Quiet Mind"
+    postId: Optional[str] = None
+    languageType: Optional[str] = None
 
 
 class FeedCommentCreateBody(BaseModel):
@@ -201,6 +212,21 @@ class TeamChangeBody(BaseModel):
 
 class DeleteAccountBody(BaseModel):
     password: str
+
+
+class ForgotPasswordBody(BaseModel):
+    email: str
+
+
+class VerifyResetBody(BaseModel):
+    email: str
+    token: str
+
+
+class ResetPasswordBody(BaseModel):
+    email: str
+    token: str
+    newPassword: str
 
 
 class WaterTrackBody(BaseModel):
@@ -439,6 +465,37 @@ def _profile_payload(db: Session, user):
 def _season_id(now: Optional[datetime] = None) -> str:
     dt = now or datetime.utcnow()
     return dt.strftime("%Y-%m")
+
+
+def _ensure_season_row(db: Session, season_code: str):
+    try:
+        year_s, month_s = season_code.split("-")
+        year = int(year_s)
+        month = int(month_s)
+    except Exception:
+        now = datetime.utcnow()
+        year = now.year
+        month = now.month
+        season_code = f"{year}-{str(month).zfill(2)}"
+    start_date = datetime(year, month, 1).date()
+    if month == 12:
+        end_date = datetime(year + 1, 1, 1).date() - timedelta(days=1)
+    else:
+        end_date = datetime(year, month + 1, 1).date() - timedelta(days=1)
+    db.execute(
+        text(
+            """
+            INSERT INTO seasons (season_code, start_date, end_date, is_active)
+            VALUES (:season_code, :start_date, :end_date, TRUE)
+            ON CONFLICT (season_code) DO NOTHING
+            """
+        ),
+        {
+            "season_code": season_code,
+            "start_date": start_date,
+            "end_date": end_date,
+        },
+    )
 
 
 def _day_key(now: Optional[datetime] = None) -> str:
@@ -727,6 +784,25 @@ def _fallback_generated_posts(lang: str):
     return out
 
 
+_GENERATED_IDENTITIES = [
+    "🌸 Soft Soul",
+    "☁️ Quiet Mind",
+    "🤍 Hidden Hug",
+    "✨ Lost Dreamer",
+    "🌙 Midnight Girl",
+    "🫧 Gentle Bloom",
+    "🌧️ Tender Rain",
+    "🕯️ Silent Heart",
+]
+
+
+def _generated_identity_for(day_key: str, lang: str, idx: int, content: str) -> str:
+    seed = f"{day_key}|{lang}|{idx}|{content.strip().lower()}"
+    digest = hashlib.sha256(seed.encode()).hexdigest()
+    offset = int(digest[:8], 16) % len(_GENERATED_IDENTITIES)
+    return _GENERATED_IDENTITIES[(idx + offset) % len(_GENERATED_IDENTITIES)]
+
+
 def _refresh_generated_posts(lang: str):
     key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not key:
@@ -766,14 +842,15 @@ def _refresh_generated_posts(lang: str):
         now = datetime.utcnow()
         out = []
         for idx, row in enumerate(data[:6]):
+            content_text = str(row.get("content", "")).strip()
             out.append(
                 {
                     "kind": "generated",
                     "language": lang,
-                    "content": str(row.get("content", "")).strip(),
+                    "content": content_text,
                     "category": str(row.get("category", "motivation")).strip().lower(),
                     "mood": str(row.get("mood", "calm")).strip().lower(),
-                    "anonymous_identity": str(row.get("anonymous_identity", "☁️ Quiet Mind")).strip(),
+                    "anonymous_identity": str(row.get("anonymous_identity", "")).strip(),
                     "created_at": now - timedelta(minutes=idx * 13),
                     "expires_at": now + timedelta(hours=24),
                     "engagement_score": 30 + (idx * 8),
@@ -796,22 +873,153 @@ def _ensure_generated_posts(lang: str):
     q = {"language": lang, "day_key": day_key, "expires_at": {"$gt": now}}
     rows = list(col.find(q).sort("created_at", -1).limit(20))
     if rows:
+        unique_identities = {
+            str(r.get("anonymous_identity", "")).strip()
+            for r in rows
+            if str(r.get("anonymous_identity", "")).strip()
+        }
+        if len(rows) > 1 and len(unique_identities) <= 1:
+            for idx, row in enumerate(rows):
+                fixed_identity = _generated_identity_for(
+                    day_key,
+                    lang,
+                    idx,
+                    str(row.get("content", "")),
+                )
+                col.update_one(
+                    {"_id": row["_id"]},
+                    {"$set": {"anonymous_identity": fixed_identity}},
+                )
+                row["anonymous_identity"] = fixed_identity
         return rows
     fresh = _refresh_generated_posts(lang)
     if not fresh:
         return []
     docs = []
-    for row in fresh:
+    for idx, row in enumerate(fresh):
         payload = dict(row)
         payload["day_key"] = day_key
         payload["created_at"] = payload.get("created_at") or now
         payload["expires_at"] = payload.get("expires_at") or (now + timedelta(hours=24))
+        payload["anonymous_identity"] = _generated_identity_for(
+            day_key,
+            lang,
+            idx,
+            str(payload.get("content", "")),
+        )
         docs.append(payload)
     try:
         col.insert_many(docs)
     except Exception:
         pass
     return docs
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _send_password_reset_email(email: str, token: str):
+    app_url = os.getenv("APP_PUBLIC_URL", "https://ahira.app").rstrip("/")
+    reset_link = f"{app_url}/reset-password?email={email}&token={token}"
+    subject = "Ahira Password Reset"
+    body_text = (
+        "We received a request to reset your Ahira password.\n\n"
+        f"Reset link (valid for 15 minutes): {reset_link}\n\n"
+        "If you did not request this, you can ignore this email."
+    )
+
+    resend_key = os.getenv("RESEND_API_KEY", "").strip()
+    if resend_key:
+        from_email = os.getenv("RESEND_FROM_EMAIL", "Ahira <no-reply@ahira.app>")
+        r = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {resend_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": from_email,
+                "to": [email],
+                "subject": subject,
+                "text": body_text,
+            },
+            timeout=10,
+        )
+        if 200 <= r.status_code < 300:
+            return
+        raise RuntimeError(f"resend_status_{r.status_code}")
+
+    sendgrid_key = os.getenv("SENDGRID_API_KEY", "").strip()
+    if sendgrid_key:
+        from_email = os.getenv("SENDGRID_FROM_EMAIL", "no-reply@ahira.app")
+        r = requests.post(
+            "https://api.sendgrid.com/v3/mail/send",
+            headers={
+                "Authorization": f"Bearer {sendgrid_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "personalizations": [{"to": [{"email": email}]}],
+                "from": {"email": from_email, "name": "Ahira"},
+                "subject": subject,
+                "content": [{"type": "text/plain", "value": body_text}],
+            },
+            timeout=10,
+        )
+        if 200 <= r.status_code < 300:
+            return
+        raise RuntimeError(f"sendgrid_status_{r.status_code}")
+
+    smtp_host = os.getenv("SMTP_HOST", "").strip()
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER", "").strip()
+    smtp_password = os.getenv("SMTP_PASSWORD", "").strip()
+    smtp_from = os.getenv("SMTP_FROM_EMAIL", smtp_user or "no-reply@ahira.app")
+    smtp_use_ssl = os.getenv("SMTP_USE_SSL", "false").strip().lower() == "true"
+
+    if not smtp_host or not smtp_user or not smtp_password:
+        raise RuntimeError("email_provider_not_configured")
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = smtp_from
+    msg["To"] = email
+    msg.set_content(body_text)
+
+    if smtp_use_ssl:
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, context=ssl.create_default_context(), timeout=10) as server:
+            server.login(smtp_user, smtp_password)
+            server.send_message(msg)
+    else:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as server:
+            server.starttls(context=ssl.create_default_context())
+            server.login(smtp_user, smtp_password)
+            server.send_message(msg)
+
+
+def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = 22):
+    key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("openrouter_api_key_missing")
+    model = os.getenv("OPENROUTER_MODEL", "google/gemma-3-27b-it:free").strip()
+    response = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": os.getenv("APP_PUBLIC_URL", "https://ahira.app"),
+            "X-Title": "Ahira",
+        },
+        json={
+            "model": model,
+            "messages": messages,
+            "temperature": 0.78,
+            "max_tokens": 420,
+        },
+        timeout=timeout_seconds,
+    )
+    return model, response
 
 
 def _safe_delete_sql(db: Session, sql: str, params: dict, label: str):
@@ -864,6 +1072,10 @@ def _delete_user_owned_postgres(db: Session, user_id: int, *, delete_user: bool 
         "user_devices",
         "user_presence",
         "content_flags",
+        "password_reset_tokens",
+        "feed_comments",
+        "feed_reactions",
+        "feed_user_posts",
         "reminders",
         "sessions",
         "user_profiles",
@@ -1018,6 +1230,142 @@ def users_me(request: Request, db: Session = Depends(get_db)):
     return me(request, db)
 
 
+@app.get("/users/me/profile")
+def users_me_profile(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse({"status": "guest"}, status_code=401)
+    profile, selected_team = _profile_payload(db, user)
+    return {
+        "status": "ok",
+        "profile": profile,
+        "selected_team": selected_team,
+        "team_change_count": profile["teamChangeCount"] if profile else 0,
+    }
+
+
+@app.post("/auth/forgot-password")
+def forgot_password(body: ForgotPasswordBody, db: Session = Depends(get_db)):
+    email = (body.email or "").strip().lower()
+    if not email:
+        return JSONResponse({"status": "error", "message": "Email is required."}, status_code=400)
+
+    user = crud.get_user_by_email(db, email)
+    if not user:
+        return {"status": "ok", "message": "If this email exists, a reset link has been sent."}
+
+    token = secrets.token_urlsafe(32)
+    token_hash = _sha256_text(token)
+    expires_at = datetime.utcnow() + timedelta(minutes=15)
+    db.execute(
+        text("UPDATE password_reset_tokens SET used = TRUE WHERE user_id = :uid AND used = FALSE"),
+        {"uid": user.id},
+    )
+    db.execute(
+        text(
+            """
+            INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, used, created_at)
+            VALUES (:uid, :token_hash, :expires_at, FALSE, NOW())
+            """
+        ),
+        {"uid": user.id, "token_hash": token_hash, "expires_at": expires_at},
+    )
+    db.commit()
+
+    try:
+        _send_password_reset_email(email, token)
+    except Exception as exc:
+        print(f"[auth.reset] failed sending email for user_id={user.id}: {exc}")
+        return JSONResponse(
+            {"status": "error", "message": "Unable to send reset email right now."},
+            status_code=503,
+        )
+
+    return {"status": "ok", "message": "If this email exists, a reset link has been sent."}
+
+
+@app.post("/auth/verify-reset")
+def verify_reset(body: VerifyResetBody, db: Session = Depends(get_db)):
+    email = (body.email or "").strip().lower()
+    token = (body.token or "").strip()
+    if not email or not token:
+        return JSONResponse({"status": "error", "message": "Email and token are required."}, status_code=400)
+    user = crud.get_user_by_email(db, email)
+    if not user:
+        return JSONResponse({"status": "error", "message": "Invalid or expired token."}, status_code=400)
+    token_hash = _sha256_text(token)
+    row = db.execute(
+        text(
+            """
+            SELECT id
+            FROM password_reset_tokens
+            WHERE user_id = :uid
+              AND token_hash = :token_hash
+              AND used = FALSE
+              AND expires_at > NOW()
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ),
+        {"uid": user.id, "token_hash": token_hash},
+    ).mappings().first()
+    if not row:
+        return JSONResponse({"status": "error", "message": "Invalid or expired token."}, status_code=400)
+    return {"status": "ok", "message": "Token verified."}
+
+
+@app.post("/auth/reset-password")
+def reset_password(body: ResetPasswordBody, db: Session = Depends(get_db)):
+    email = (body.email or "").strip().lower()
+    token = (body.token or "").strip()
+    new_password = body.newPassword or ""
+    if not email or not token or not new_password:
+        return JSONResponse({"status": "error", "message": "Email, token and new password are required."}, status_code=400)
+    if len(new_password) < 6:
+        return JSONResponse({"status": "error", "message": "Password must be at least 6 characters."}, status_code=400)
+
+    user = crud.get_user_by_email(db, email)
+    if not user:
+        return JSONResponse({"status": "error", "message": "Invalid or expired token."}, status_code=400)
+    token_hash = _sha256_text(token)
+    row = db.execute(
+        text(
+            """
+            SELECT id
+            FROM password_reset_tokens
+            WHERE user_id = :uid
+              AND token_hash = :token_hash
+              AND used = FALSE
+              AND expires_at > NOW()
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ),
+        {"uid": user.id, "token_hash": token_hash},
+    ).mappings().first()
+    if not row:
+        return JSONResponse({"status": "error", "message": "Invalid or expired token."}, status_code=400)
+
+    new_hash = User.hash_password(new_password)
+    db.execute(
+        text(
+            """
+            UPDATE users
+            SET password = :password, password_hash = :password_hash, updated_at = NOW()
+            WHERE id = :uid
+            """
+        ),
+        {"uid": user.id, "password": new_hash, "password_hash": new_hash},
+    )
+    db.execute(
+        text("UPDATE password_reset_tokens SET used = TRUE WHERE user_id = :uid"),
+        {"uid": user.id},
+    )
+    db.execute(text("DELETE FROM sessions WHERE user_id = :uid"), {"uid": user.id})
+    db.commit()
+    return {"status": "ok", "message": "Password reset successful. Please login again."}
+
+
 @app.post("/session/refresh")
 def refresh_session(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -1027,6 +1375,73 @@ def refresh_session(request: Request, db: Session = Depends(get_db)):
     resp = JSONResponse({"status": "ok", "user": {"name": user.name, "email": user.email}})
     resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=SESSION_MAX_DAYS * 24 * 3600)
     return resp
+
+
+@app.post("/chat")
+def chat_proxy(body: ChatBody, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse({"status": "error", "message": "Please log in."}, status_code=401)
+
+    message = (body.message or "").strip()
+    if not message:
+        return JSONResponse({"status": "error", "message": "Message is required."}, status_code=400)
+
+    safe_history = []
+    for item in (body.history or [])[-16:]:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role", "user")).strip().lower()
+        if role not in {"system", "assistant", "user"}:
+            role = "user"
+        text_value = str(item.get("content", "")).strip()
+        if not text_value:
+            continue
+        safe_history.append({"role": role, "content": text_value[:900]})
+
+    prompt = (
+        "You are Ahira. Reply in warm, emotionally supportive, simple language for Indian users. "
+        "Avoid robotic tone and avoid difficult vocabulary."
+    )
+    messages = [{"role": "system", "content": prompt}, *safe_history, {"role": "user", "content": message}]
+
+    started_at = datetime.utcnow()
+    print(f"[chat.proxy] request started user_id={user.id} history={len(safe_history)}")
+    last_error = None
+    for attempt in range(2):
+        run_started = datetime.utcnow()
+        try:
+            model, response = _openrouter_chat_completion(messages)
+            elapsed_ms = int((datetime.utcnow() - run_started).total_seconds() * 1000)
+            print(
+                f"[chat.proxy] attempt={attempt + 1} model={model} responseTimeMs={elapsed_ms} status={response.status_code}"
+            )
+            if response.status_code < 200 or response.status_code >= 300:
+                raise RuntimeError(f"openrouter_http_{response.status_code}")
+            decoded = response.json() if response.content else {}
+            choices = decoded.get("choices") if isinstance(decoded, dict) else None
+            content = ""
+            if isinstance(choices, list) and choices:
+                first = choices[0] if isinstance(choices[0], dict) else {}
+                msg = first.get("message") if isinstance(first, dict) else {}
+                if isinstance(msg, dict):
+                    content = str(msg.get("content") or "").strip()
+            if not content:
+                raise RuntimeError("openrouter_empty_response")
+            total_ms = int((datetime.utcnow() - started_at).total_seconds() * 1000)
+            print(f"[chat.proxy] final response delivered user_id={user.id} totalMs={total_ms}")
+            return {"status": "ok", "reply": content}
+        except Exception as exc:
+            last_error = exc
+            elapsed_ms = int((datetime.utcnow() - run_started).total_seconds() * 1000)
+            print(f"[chat.proxy] timeout/error attempt={attempt + 1} afterMs={elapsed_ms} reason={exc}")
+            if attempt == 0:
+                print("[chat.proxy] retry triggered")
+                continue
+
+    total_ms = int((datetime.utcnow() - started_at).total_seconds() * 1000)
+    print(f"[chat.proxy] fallback activated user_id={user.id} totalMs={total_ms} reason={last_error}")
+    return JSONResponse({"status": "error", "message": "Live chat unavailable."}, status_code=503)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1153,11 +1568,20 @@ def get_feeds(
         if excludeExpired:
             q["expires_at"] = {"$gt": datetime.utcnow()}
 
-        rows = list(posts_col.find(q).sort("created_at", -1).skip(off).limit(lim))
+        fetch_window = min(max(lim + off + 10, 40), 300)
+        rows = list(posts_col.find(q).sort("created_at", -1).limit(fetch_window))
         generated = _ensure_generated_posts(lang)
         merged = rows + generated
         merged.sort(key=lambda x: x.get("created_at") or datetime.utcnow(), reverse=True)
-        merged = merged[off : off + lim]
+        deduped = []
+        seen_keys = set()
+        for row in merged:
+            row_key = str(row.get("post_id") or row.get("_id") or "")
+            if not row_key or row_key in seen_keys:
+                continue
+            seen_keys.add(row_key)
+            deduped.append(row)
+        merged = deduped[off : off + lim]
         post_ids = []
         for r in merged:
             rid = str(r.get("_id") or "")
@@ -1375,11 +1799,15 @@ def create_feed_post(body: FeedCreateBody, request: Request, db: Session = Depen
     if len(content) > 4000:
         return JSONResponse({"status": "error", "message": "content is too long"}, status_code=400)
 
-    lang = "en"
+    lang = _safe_language(body.languageType or "en")
     category = (body.category or "Daily Life ☕")[:120]
     mood = (body.mood or "emotional")[:64]
     identity = (body.anonymousIdentity or "☁️ Quiet Mind")[:120]
     user_id = user.id if user else None
+    client_post_id = (body.postId or "").strip()[:120]
+    if not client_post_id:
+        client_post_id = f"post_{uuid.uuid4().hex}"
+    scoped_post_id = f"{user_id or 'guest'}:{client_post_id}"
 
     created_at = datetime.utcnow()
     expires_at = created_at + timedelta(hours=24)
@@ -1387,9 +1815,28 @@ def create_feed_post(body: FeedCreateBody, request: Request, db: Session = Depen
     posts_col = mongo.get_collection("community_posts")
     inserted_id = None
     if posts_col is not None:
-        post_uuid = uuid.uuid4().hex
+        existing = posts_col.find_one({"post_id": scoped_post_id})
+        if existing:
+            existing_id = str(existing.get("_id"))
+            return {
+                "status": "ok",
+                "post": {
+                    "id": f"user_{existing_id}",
+                    "type": "user_post",
+                    "content": existing.get("content", content),
+                    "category": existing.get("category", category),
+                    "mood": existing.get("mood", mood),
+                    "anonymousIdentity": existing.get("anonymous_identity", identity),
+                    "createdAt": (existing.get("created_at") or created_at).isoformat(),
+                    "expiresAt": (existing.get("expires_at") or expires_at).isoformat(),
+                    "is_user_post": True,
+                    "is_news_post": False,
+                    "commentCount": int(existing.get("comment_count") or 0),
+                    "reactions": existing.get("reactions") or {"relate": 0, "hug": 0, "support": 0, "feltThis": 0},
+                },
+            }
         payload = {
-            "post_id": post_uuid,
+            "post_id": scoped_post_id,
             "author_user_id": user_id,
             "author_name": _feed_actor_name(user),
             "language": lang,
@@ -1404,14 +1851,53 @@ def create_feed_post(body: FeedCreateBody, request: Request, db: Session = Depen
             "comments_count": 0,
             "reactions": {"relate": 0, "hug": 0, "support": 0, "feltThis": 0},
         }
-        inserted = posts_col.insert_one(payload)
-        inserted_id = str(inserted.inserted_id)
+        try:
+            inserted = posts_col.insert_one(payload)
+            inserted_id = str(inserted.inserted_id)
+        except Exception:
+            existing = posts_col.find_one({"post_id": scoped_post_id})
+            if existing:
+                inserted_id = str(existing.get("_id"))
+                payload = existing
+            else:
+                raise
     else:
+        existing = None
+        if client_post_id:
+            existing = db.execute(
+                text(
+                    """
+                    SELECT id, content, category, mood, anonymous_identity, created_at, expires_at
+                    FROM feed_user_posts
+                    WHERE client_post_id = :client_post_id
+                    LIMIT 1
+                    """
+                ),
+                {"client_post_id": scoped_post_id},
+            ).mappings().first()
+        if existing:
+            return {
+                "status": "ok",
+                "post": {
+                    "id": f"user_{existing['id']}",
+                    "type": "user_post",
+                    "content": existing["content"],
+                    "category": existing["category"],
+                    "mood": existing["mood"],
+                    "anonymousIdentity": existing["anonymous_identity"],
+                    "createdAt": existing["created_at"].isoformat(),
+                    "expiresAt": (existing["expires_at"] or expires_at).isoformat(),
+                    "is_user_post": True,
+                    "is_news_post": False,
+                    "commentCount": 0,
+                    "reactions": {"relate": 0, "hug": 0, "support": 0, "feltThis": 0},
+                },
+            }
         inserted = db.execute(
             text(
                 """
-                INSERT INTO feed_user_posts (user_id, language, content, category, mood, anonymous_identity)
-                VALUES (:user_id, :language, :content, :category, :mood, :anonymous_identity)
+                INSERT INTO feed_user_posts (user_id, language, content, category, mood, anonymous_identity, client_post_id)
+                VALUES (:user_id, :language, :content, :category, :mood, :anonymous_identity, :client_post_id)
                 RETURNING id
                 """
             ),
@@ -1422,6 +1908,7 @@ def create_feed_post(body: FeedCreateBody, request: Request, db: Session = Depen
                 "category": category,
                 "mood": mood,
                 "anonymous_identity": identity,
+                "client_post_id": scoped_post_id,
             },
         ).mappings().first()
         db.commit()
@@ -1818,6 +2305,7 @@ def run_feed_migrations(db: Session):
     CREATE TABLE IF NOT EXISTS feed_user_posts (
       id BIGSERIAL PRIMARY KEY,
       user_id BIGINT,
+      client_post_id VARCHAR(120),
       language VARCHAR(10) NOT NULL DEFAULT 'en',
       content TEXT NOT NULL,
       category VARCHAR(120) NOT NULL DEFAULT 'Daily Life ☕',
@@ -1830,6 +2318,8 @@ def run_feed_migrations(db: Session):
 
     CREATE INDEX IF NOT EXISTS idx_feed_user_posts_created_at ON feed_user_posts (created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_feed_user_posts_language_created ON feed_user_posts (language, created_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_feed_user_posts_client_post_id
+      ON feed_user_posts (client_post_id) WHERE client_post_id IS NOT NULL;
 
     CREATE TABLE IF NOT EXISTS feed_comments (
       id BIGSERIAL PRIMARY KEY,
@@ -1854,6 +2344,19 @@ def run_feed_migrations(db: Session):
     );
 
     CREATE INDEX IF NOT EXISTS idx_feed_reactions_post ON feed_reactions (post_id);
+
+    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      used BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user_created
+      ON password_reset_tokens (user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_lookup
+      ON password_reset_tokens (user_id, token_hash, used, expires_at);
 
     CREATE TABLE IF NOT EXISTS teams (
       id BIGSERIAL PRIMARY KEY,
@@ -2282,6 +2785,7 @@ def run_feed_migrations(db: Session):
     ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
     UPDATE users SET password_hash = password WHERE password_hash IS NULL;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '30 days');
+    ALTER TABLE feed_user_posts ADD COLUMN IF NOT EXISTS client_post_id VARCHAR(120);
     ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS preferred_language VARCHAR(10) NOT NULL DEFAULT 'en';
     ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS total_xp BIGINT NOT NULL DEFAULT 0;
@@ -2661,10 +3165,26 @@ def submit_score(body: GameScoreBody, request: Request, db: Session = Depends(ge
         return JSONResponse({"status": "error", "message": "gameId required"}, status_code=400)
 
     sid = body.seasonId or _season_id()
+    _ensure_season_row(db, sid)
     idempotency_key = (body.idempotencyKey or f"{game_id}_{uuid.uuid4().hex}")[:128]
     flags = _anti_cheat_flags(db, user.id, game_id, int(body.score), idempotency_key)
     team_row = db.execute(text("SELECT team_id FROM user_profiles WHERE user_id = :uid"), {"uid": user.id}).mappings().first()
     team_id = team_row["team_id"] if team_row else None
+    contribution_points = int(body.contributionPoints or 0)
+    xp_earned = int(body.xpEarned or 0)
+
+    team_points_before = None
+    if team_id is not None:
+        before_row = db.execute(
+            text("SELECT total_points FROM teams WHERE id = :tid"),
+            {"tid": team_id},
+        ).mappings().first()
+        team_points_before = int((before_row or {}).get("total_points") or 0)
+
+    print(
+        f"[scores.submit] score received user_id={user.id} team_id={team_id} "
+        f"game_id={game_id} score={int(body.score)} points_earned={contribution_points}"
+    )
 
     try:
         inserted = db.execute(
@@ -2685,14 +3205,15 @@ def submit_score(body: GameScoreBody, request: Request, db: Session = Depends(ge
                 "season_id": sid,
                 "game_id": game_id,
                 "score": int(body.score),
-                "xp_earned": int(body.xpEarned or 0),
-                "contribution_points": int(body.contributionPoints or 0),
+                "xp_earned": xp_earned,
+                "contribution_points": contribution_points,
                 "anti_cheat_metadata": str((body.antiCheatMetadata or {})).replace("'", '"'),
                 "anti_cheat_flags": str(flags).replace("'", '"'),
                 "is_suspicious": len(flags) > 0,
             },
         ).mappings().first()
-    except Exception:
+    except Exception as exc:
+        print(f"[scores.submit] insert failed user_id={user.id} key={idempotency_key} error={exc}")
         db.rollback()
         existing = db.execute(
             text("SELECT id, created_at FROM game_score_submissions WHERE user_id = :uid AND idempotency_key = :k"),
@@ -2713,10 +3234,10 @@ def submit_score(body: GameScoreBody, request: Request, db: Session = Depends(ge
             WHERE user_id = :uid
             """
         ),
-        {"uid": user.id, "xp": int(body.xpEarned or 0), "cp": int(body.contributionPoints or 0)},
+        {"uid": user.id, "xp": xp_earned, "cp": contribution_points},
     )
-    if team_id is not None and int(body.contributionPoints or 0) > 0:
-        db.execute(text("UPDATE teams SET total_points = total_points + :cp, updated_at = NOW() WHERE id = :tid"), {"cp": int(body.contributionPoints or 0), "tid": team_id})
+    if team_id is not None and contribution_points > 0:
+        db.execute(text("UPDATE teams SET total_points = total_points + :cp, updated_at = NOW() WHERE id = :tid"), {"cp": contribution_points, "tid": team_id})
         db.execute(
             text(
                 """
@@ -2724,7 +3245,7 @@ def submit_score(body: GameScoreBody, request: Request, db: Session = Depends(ge
                 VALUES (:uid, :tid, :sid, :gid, :points, 'game_score')
                 """
             ),
-            {"uid": user.id, "tid": team_id, "sid": sid, "gid": inserted["id"], "points": int(body.contributionPoints or 0)},
+            {"uid": user.id, "tid": team_id, "sid": sid, "gid": inserted["id"], "points": contribution_points},
         )
         db.execute(
             text(
@@ -2737,9 +3258,22 @@ def submit_score(body: GameScoreBody, request: Request, db: Session = Depends(ge
                 "uid": user.id,
                 "tid": team_id,
                 "sid": sid,
-                "points": int(body.contributionPoints or 0),
+                "points": contribution_points,
                 "meta": '{"game":"%s"}' % game_id,
             },
+        )
+        db.execute(
+            text(
+                """
+                INSERT INTO season_team_stats (season_id, team_id, total_points, wins, rank, updated_at, created_at)
+                SELECT s.id, :tid, :cp, 0, NULL, NOW(), NOW()
+                FROM seasons s
+                WHERE s.season_code = :sid
+                ON CONFLICT (season_id, team_id)
+                DO UPDATE SET total_points = season_team_stats.total_points + EXCLUDED.total_points, updated_at = NOW()
+                """
+            ),
+            {"sid": sid, "tid": team_id, "cp": contribution_points},
         )
     db.execute(
         text(
@@ -2796,9 +3330,84 @@ def submit_score(body: GameScoreBody, request: Request, db: Session = Depends(ge
             {"uid": user.id, "sidb": inserted["id"], "flag": flag, "meta": '{"game":"%s"}' % game_id},
         )
     _refresh_season_team_stats(db, sid)
-    db.commit()
+    leaderboard_rows = db.execute(
+        text(
+            """
+            SELECT
+              t.id,
+              t.name,
+              t.logo_url,
+              t.banner_url,
+              COALESCE(t.total_points, 0) AS total_points,
+              COALESCE(t.season_wins, 0) AS season_wins
+            FROM teams t
+            ORDER BY t.total_points DESC, t.name ASC
+            LIMIT 20
+            """
+        )
+    ).mappings().all()
+    leaderboard_payload = []
+    for idx, row in enumerate(leaderboard_rows, start=1):
+        slug = _team_slug(row["name"])
+        leaderboard_payload.append(
+            {
+                "rank": idx,
+                "id": slug,
+                "teamId": slug,
+                "team_id": slug,
+                "numericId": int(row["id"]),
+                "name": row["name"],
+                "teamName": row["name"],
+                "points": int(row["total_points"] or 0),
+                "totalPoints": int(row["total_points"] or 0),
+                "seasonPoints": int(row["total_points"] or 0),
+                "season_points": int(row["total_points"] or 0),
+                "wins": int(row["season_wins"] or 0),
+                "seasonWins": int(row["season_wins"] or 0),
+                "logoUrl": row["logo_url"] or f"ahira://team/{slug}/logo",
+                "logo_url": row["logo_url"] or f"ahira://team/{slug}/logo",
+                "bannerUrl": row["banner_url"] or f"ahira://team/{slug}/banner",
+                "banner_url": row["banner_url"] or f"ahira://team/{slug}/banner",
+            }
+        )
+    db.execute(
+        text(
+            """
+            INSERT INTO leaderboard_cache (scope, season_id, game_id, payload, generated_at)
+            VALUES ('team', :sid, NULL, CAST(:payload AS JSONB), NOW())
+            ON CONFLICT (scope, season_id, game_id)
+            DO UPDATE SET payload = EXCLUDED.payload, generated_at = NOW(), updated_at = NOW()
+            """
+        ),
+        {"sid": sid, "payload": json.dumps(leaderboard_payload)},
+    )
+    print(f"[scores.submit] leaderboard cache regenerated season_id={sid} rows={len(leaderboard_payload)}")
 
-    return {"status": "ok", "submissionId": inserted["id"], "suspicious": len(flags) > 0, "antiCheatFlags": flags}
+    team_points_after = None
+    if team_id is not None:
+        after_row = db.execute(
+            text("SELECT total_points FROM teams WHERE id = :tid"),
+            {"tid": team_id},
+        ).mappings().first()
+        team_points_after = int((after_row or {}).get("total_points") or 0)
+
+    db.commit()
+    print(
+        f"[scores.submit] team_total_before={team_points_before} team_total_after={team_points_after} "
+        f"transaction committed submission_id={inserted['id']}"
+    )
+
+    return {
+        "status": "ok",
+        "submissionId": inserted["id"],
+        "suspicious": len(flags) > 0,
+        "antiCheatFlags": flags,
+        "seasonId": sid,
+        "teamId": team_id,
+        "teamTotalBefore": team_points_before,
+        "teamTotalAfter": team_points_after,
+        "leaderboard": leaderboard_payload,
+    }
 
 
 @app.post("/game-scores")
@@ -2922,6 +3531,7 @@ def personal_leaderboard(
 @app.get("/leaderboard/team")
 def team_leaderboard(seasonId: Optional[str] = Query(None), limit: int = Query(20), db: Session = Depends(get_db)):
     sid = seasonId or _season_id()
+    _ensure_season_row(db, sid)
     lim = min(max(1, limit), 20)
     _refresh_season_team_stats(db, sid)
     rows = db.execute(
@@ -2933,13 +3543,13 @@ def team_leaderboard(seasonId: Optional[str] = Query(None), limit: int = Query(2
               t.logo_url,
               t.banner_url,
               t.season_wins,
-              COALESCE(st.total_points, 0) AS season_points,
+              COALESCE(t.total_points, 0) AS season_points,
               COALESCE(st.rank, 0) AS cached_rank
             FROM teams t
             LEFT JOIN seasons s ON s.season_code = :sid
             LEFT JOIN season_team_stats st
               ON st.team_id = t.id AND st.season_id = s.id
-            ORDER BY season_points DESC, t.name ASC
+            ORDER BY t.total_points DESC, t.name ASC
             LIMIT :lim
             """
         ),
@@ -3769,225 +4379,3 @@ def update_medicine(medicine_id: int, body: MedicineUpdateBody, request: Request
             {"mid": medicine_id, "uid": user.id, "status": "taken" if body.taken else "skipped"},
         )
     db.commit()
-    return {"status": "ok", "item": dict(row)}
-
-
-@app.delete("/medicines/{medicine_id}")
-def delete_medicine_row(medicine_id: int, request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    row = db.execute(text("DELETE FROM medicines WHERE id = :mid AND user_id = :uid RETURNING id"), {"mid": medicine_id, "uid": user.id}).mappings().first()
-    db.commit()
-    if not row:
-        return JSONResponse({"status": "error", "message": "Medicine not found"}, status_code=404)
-    return {"status": "ok"}
-
-
-@app.get("/goals")
-def list_goals(request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    rows = db.execute(text("SELECT * FROM user_goals WHERE user_id = :uid ORDER BY created_at DESC"), {"uid": user.id}).mappings().all()
-    return {"items": [dict(r) for r in rows]}
-
-
-@app.post("/goals")
-def create_goal(body: GoalBody, request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    title = (body.goalTitle or "").strip()
-    if not title:
-        return JSONResponse({"status": "error", "message": "goalTitle required"}, status_code=400)
-    row = db.execute(
-        text(
-            """
-            INSERT INTO user_goals (user_id, goal_title, goal_description, target_value, current_progress, completed)
-            VALUES (:uid, :title, :description, :target_value, :current_progress, :completed)
-            RETURNING *
-            """
-        ),
-        {
-            "uid": user.id,
-            "title": title,
-            "description": body.goalDescription,
-            "target_value": int(body.targetValue or 0),
-            "current_progress": int(body.currentProgress or 0),
-            "completed": bool(body.completed),
-        },
-    ).mappings().first()
-    db.commit()
-    return {"status": "ok", "item": dict(row)}
-
-
-@app.get("/grocery/lists")
-def list_grocery_lists(request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    rows = db.execute(text("SELECT * FROM grocery_lists WHERE user_id = :uid ORDER BY created_at DESC"), {"uid": user.id}).mappings().all()
-    return {"items": [dict(r) for r in rows]}
-
-
-@app.post("/grocery/lists")
-def create_grocery_list(body: GroceryListBody, request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    name = (body.listName or "").strip()
-    if not name:
-        return JSONResponse({"status": "error", "message": "listName required"}, status_code=400)
-    row = db.execute(text("INSERT INTO grocery_lists (user_id, list_name) VALUES (:uid, :name) RETURNING *"), {"uid": user.id, "name": name}).mappings().first()
-    db.commit()
-    return {"status": "ok", "item": dict(row)}
-
-
-@app.get("/grocery/lists/{list_id}/items")
-def list_grocery_items(list_id: int, request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    rows = db.execute(text("SELECT * FROM grocery_items WHERE user_id = :uid AND list_id = :lid ORDER BY created_at DESC"), {"uid": user.id, "lid": list_id}).mappings().all()
-    return {"items": [dict(r) for r in rows]}
-
-
-@app.post("/grocery/lists/{list_id}/items")
-def create_grocery_item(list_id: int, body: GroceryItemBody, request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    parent = db.execute(text("SELECT id FROM grocery_lists WHERE id = :lid AND user_id = :uid"), {"lid": list_id, "uid": user.id}).first()
-    if not parent:
-        return JSONResponse({"status": "error", "message": "List not found"}, status_code=404)
-    name = (body.itemName or "").strip()
-    if not name:
-        return JSONResponse({"status": "error", "message": "itemName required"}, status_code=400)
-    row = db.execute(
-        text(
-            """
-            INSERT INTO grocery_items (list_id, user_id, item_name, quantity, completed)
-            VALUES (:lid, :uid, :name, :quantity, :completed)
-            RETURNING *
-            """
-        ),
-        {"lid": list_id, "uid": user.id, "name": name, "quantity": body.quantity, "completed": bool(body.completed)},
-    ).mappings().first()
-    db.commit()
-    return {"status": "ok", "item": dict(row)}
-
-
-@app.put("/grocery/items/{item_id}")
-def update_grocery_item(item_id: int, body: GroceryItemUpdateBody, request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    row = db.execute(
-        text(
-            """
-            UPDATE grocery_items
-            SET item_name = COALESCE(:name, item_name),
-                quantity = COALESCE(:quantity, quantity),
-                completed = COALESCE(:completed, completed),
-                updated_at = NOW()
-            WHERE id = :iid AND user_id = :uid
-            RETURNING *
-            """
-        ),
-        {"name": body.itemName, "quantity": body.quantity, "completed": body.completed, "iid": item_id, "uid": user.id},
-    ).mappings().first()
-    db.commit()
-    if not row:
-        return JSONResponse({"status": "error", "message": "Item not found"}, status_code=404)
-    return {"status": "ok", "item": dict(row)}
-
-
-@app.delete("/grocery/items/{item_id}")
-def delete_grocery_item(item_id: int, request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    row = db.execute(text("DELETE FROM grocery_items WHERE id = :iid AND user_id = :uid RETURNING id"), {"iid": item_id, "uid": user.id}).mappings().first()
-    db.commit()
-    if not row:
-        return JSONResponse({"status": "error", "message": "Item not found"}, status_code=404)
-    return {"status": "ok"}
-
-# ─────────────────────────────────────────────────────────────
-# DELETE MY DATA — wipes all user data from PostgreSQL
-# ─────────────────────────────────────────────────────────────
-@app.delete("/delete_my_data")
-def delete_my_data(request: Request, db: Session = Depends(get_db)):
-    user = current_user(request, db)
-    if not user:
-        return JSONResponse({"status": "error", "message": "Not logged in."}, status_code=401)
-
-    _delete_user_owned_postgres(db, user.id, delete_user=False)
-    db.commit()
-    _delete_user_owned_mongo(user.id)
-
-    resp = JSONResponse({"status": "ok", "message": "All data deleted."})
-    resp.delete_cookie(SESSION_COOKIE)
-    return resp
-
-
-@app.delete("/delete_account")
-def delete_account(body: DeleteAccountBody, request: Request, db: Session = Depends(get_db)):
-    user = current_user(request, db)
-    if not user:
-        return JSONResponse({"status": "error", "message": "Not logged in."}, status_code=401)
-    if not user.check_password(body.password):
-        return JSONResponse({"status": "error", "message": "Password confirmation failed."}, status_code=403)
-
-    user_id = user.id
-
-    _delete_user_owned_postgres(db, user_id, delete_user=True)
-    db.commit()
-    _delete_user_owned_mongo(user_id)
-
-    resp = JSONResponse({"status": "ok", "message": "Account permanently deleted."})
-    resp.delete_cookie(SESSION_COOKIE)
-    return resp
-
-
-# ─────────────────────────────────────────────────────────────
-# STATUS ENDPOINTS
-# ─────────────────────────────────────────────────────────────
-@app.get("/db-check")
-def db_check(db: Session = Depends(get_db)):
-    try:
-        db.execute(text("SELECT 1"))
-        return {"status": "ok", "message": "PostgreSQL connected ✅"}
-    except Exception as e:
-        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
-
-
-@app.get("/db-status")
-def db_status(db: Session = Depends(get_db)):
-    try:
-        db.execute(text("SELECT 1"))
-        pg = {
-            "backend": "postgresql",
-            "postgres_url_set": True,
-            "psycopg2_available": True,
-            "status": "connected",
-            "user_count": db.query(User).count(),
-            "reminder_count": db.query(ReminderModel).count(),
-            "session_count": db.query(UserSession).count(),
-        }
-    except Exception as e:
-        pg = {"backend": "postgresql", "status": "error", "error": str(e)}
-
-    return {"postgresql": pg, "mongodb": mongo.get_status()}
-
-
-@app.get("/users")
-def list_users(db: Session = Depends(get_db)):
-    users = crud.list_users(db)
-    return {"users": [{"id": u.id, "name": u.name, "email": u.email} for u in users]}
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok", "services": {"postgresql": True, "mongodb": True}}
