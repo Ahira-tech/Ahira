@@ -6,11 +6,14 @@ Sessions expire after 30 days. Guests see empty data.
 
 import os
 import json
+import hmac
 import hashlib
 import uuid
 import secrets
 import smtplib
 import ssl
+import unicodedata
+from base64 import urlsafe_b64encode, urlsafe_b64decode
 from datetime import datetime, timedelta
 from typing import Optional
 from email.message import EmailMessage
@@ -27,7 +30,7 @@ from bson import ObjectId
 
 from ai.database import Base, engine, get_db, test_connection
 from ai.models import Reminder as ReminderModel
-from ai.models import User, UserSession
+from ai.models import User, UserSession, UserRecoveryEmoji
 import ai.crud as crud
 import ai.mongo as mongo
 
@@ -38,6 +41,10 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 SESSION_COOKIE = "ahira_session"
 SESSION_MAX_DAYS = 30
 NEWS_API_URL = "https://newsapi.org/v2/top-headlines"
+RECOVERY_EMOJI_COUNT = 4
+RECOVERY_MAX_FAILED_ATTEMPTS = 5
+RECOVERY_LOCK_MINUTES = 15
+RECOVERY_TOKEN_TTL_MINUTES = 10
 
 
 # ── Startup ───────────────────────────────────────────────────
@@ -229,6 +236,22 @@ class ResetPasswordBody(BaseModel):
     newPassword: str
 
 
+class RecoveryEmojiSetupBody(BaseModel):
+    emoji_sequence: list[str]
+    current_password: Optional[str] = None
+    recovery_hint: Optional[str] = None
+
+
+class RecoveryEmojiVerifyBody(BaseModel):
+    email: str
+    emoji_sequence: list[str]
+
+
+class RecoveryEmojiResetBody(BaseModel):
+    temporary_reset_token: str
+    new_password: str
+
+
 class WaterTrackBody(BaseModel):
     amountMl: int
     consumedAt: Optional[str] = None
@@ -411,7 +434,193 @@ def _team_visuals(team_slug: str):
         "logo_url": f"ahira://team/{team_slug}/logo",
         "bannerUrl": f"ahira://team/{team_slug}/banner",
         "banner_url": f"ahira://team/{team_slug}/banner",
+        "flagUrl": f"ahira://team/{team_slug}/flag",
+        "flag_url": f"ahira://team/{team_slug}/flag",
     }
+
+
+def _leaderboard_cache_ttl_expired(generated_at: Optional[datetime], ttl_seconds: int = 30) -> bool:
+    if generated_at is None:
+        return True
+    if generated_at.tzinfo is not None:
+        generated_at = generated_at.replace(tzinfo=None)
+    return (datetime.utcnow() - generated_at).total_seconds() > ttl_seconds
+
+
+def _team_member_counts_sql() -> str:
+    return """
+        SELECT team_id, COUNT(*) AS member_count
+        FROM user_profiles
+        WHERE team_id IS NOT NULL
+        GROUP BY team_id
+    """
+
+
+def _team_leaderboard_query_sql() -> str:
+    return f"""
+        SELECT
+          t.id,
+          t.name,
+          t.logo_url,
+          t.banner_url,
+          t.member_count AS cached_member_count,
+          COALESCE(tm.member_count, t.member_count, 0) AS member_count,
+          COALESCE(st.total_points, t.total_points, 0) AS season_points,
+          COALESCE(t.total_points, 0) AS total_points,
+          COALESCE(t.season_wins, 0) AS season_wins,
+          COALESCE(st.rank, 0) AS cached_rank
+        FROM teams t
+        LEFT JOIN seasons s ON s.season_code = :sid
+        LEFT JOIN season_team_stats st
+          ON st.team_id = t.id AND st.season_id = s.id
+        LEFT JOIN (
+            {_team_member_counts_sql()}
+        ) tm ON tm.team_id = t.id
+        ORDER BY COALESCE(st.total_points, t.total_points, 0) DESC, t.name ASC
+        LIMIT :lim
+    """
+
+
+def _team_leaderboard_item(row: dict, rank: int):
+    slug = _team_slug(str(row["name"]))
+    season_points = int(row["season_points"] or 0)
+    total_points = int(row["total_points"] or 0)
+    member_count = int(row["member_count"] or 0)
+    return {
+        "rank": rank,
+        "id": slug,
+        "teamId": slug,
+        "team_id": slug,
+        "numericId": int(row["id"]),
+        "name": row["name"],
+        "teamName": row["name"],
+        "points": season_points,
+        "totalPoints": total_points,
+        "seasonPoints": season_points,
+        "season_points": season_points,
+        "wins": int(row["season_wins"] or 0),
+        "seasonWins": int(row["season_wins"] or 0),
+        "memberCount": member_count,
+        "member_count": member_count,
+        "logoUrl": row["logo_url"] or f"ahira://team/{slug}/logo",
+        "logo_url": row["logo_url"] or f"ahira://team/{slug}/logo",
+        "bannerUrl": row["banner_url"] or f"ahira://team/{slug}/banner",
+        "banner_url": row["banner_url"] or f"ahira://team/{slug}/banner",
+        "flagUrl": f"ahira://team/{slug}/flag",
+        "flag_url": f"ahira://team/{slug}/flag",
+    }
+
+
+def _read_fresh_team_leaderboard_cache(db: Session, season_code: str, limit: int):
+    row = db.execute(
+        text(
+            """
+            SELECT payload, generated_at
+            FROM leaderboard_cache
+            WHERE scope = 'team' AND season_id = :sid AND game_id IS NULL
+            LIMIT 1
+            """
+        ),
+        {"sid": season_code},
+    ).mappings().first()
+    if not row or _leaderboard_cache_ttl_expired(row["generated_at"]):
+        return None
+    payload = row["payload"]
+    if not isinstance(payload, list) or not payload:
+        return None
+    items = []
+    for idx, item in enumerate(payload[:limit], start=1):
+        if isinstance(item, dict):
+            items.append(item)
+    return items if items else None
+
+
+def _refresh_team_leaderboard_cache(db: Session, season_code: str, limit: int):
+    rows = db.execute(
+        text(_team_leaderboard_query_sql()),
+        {"sid": season_code, "lim": limit},
+    ).mappings().all()
+    items = [_team_leaderboard_item(row, index) for index, row in enumerate(rows, start=1)]
+    db.execute(
+        text(
+            """
+            INSERT INTO leaderboard_cache (scope, season_id, game_id, payload, generated_at, updated_at)
+            VALUES ('team', :sid, NULL, CAST(:payload AS JSONB), NOW(), NOW())
+            ON CONFLICT (scope, season_id, game_id)
+            DO UPDATE SET payload = EXCLUDED.payload, generated_at = EXCLUDED.generated_at, updated_at = NOW()
+            """
+        ),
+        {"sid": season_code, "payload": json.dumps(items)},
+    )
+    return items
+
+
+def _get_team_leaderboard(db: Session, season_code: str, limit: int, *, allow_cache: bool = True):
+    if allow_cache:
+        cached = _read_fresh_team_leaderboard_cache(db, season_code, limit)
+        if cached is not None:
+            print(
+                f"[leaderboard.team] cache_hit season_id={season_code} rows={len(cached)}"
+            )
+            return cached, True
+    print(f"[leaderboard.team] cache_miss season_id={season_code}")
+    items = _refresh_team_leaderboard_cache(db, season_code, limit)
+    print(
+        f"[leaderboard.team] recalculated season_id={season_code} rows={len(items)}"
+    )
+    return items, False
+
+
+def _resolve_submission_team(db: Session, user_id: int):
+    row = db.execute(
+        text(
+            """
+            SELECT team_id, selected_team_id, selected_team_name
+            FROM user_profiles
+            WHERE user_id = :uid
+            """
+        ),
+        {"uid": user_id},
+    ).mappings().first()
+    if not row:
+        return None
+
+    team_id = row["team_id"]
+    if team_id is not None:
+        team = db.execute(
+            text("SELECT id, name FROM teams WHERE id = :tid"),
+            {"tid": team_id},
+        ).mappings().first()
+        if team:
+            return int(team["id"]), str(team["name"])
+
+    team_name = _team_name_from_payload(row["selected_team_name"], row["selected_team_id"])
+    if team_name:
+        team = db.execute(
+            text("SELECT id, name FROM teams WHERE name = :name"),
+            {"name": team_name},
+        ).mappings().first()
+        if team:
+            db.execute(
+                text(
+                    """
+                    UPDATE user_profiles
+                    SET team_id = :tid,
+                        selected_team_id = :selected_team_id,
+                        selected_team_name = :selected_team_name,
+                        updated_at = NOW()
+                    WHERE user_id = :uid
+                    """
+                ),
+                {
+                    "uid": user_id,
+                    "tid": team["id"],
+                    "selected_team_id": _team_slug(team["name"]),
+                    "selected_team_name": team["name"],
+                },
+            )
+            return int(team["id"]), str(team["name"])
+    return None
 
 
 def _profile_payload(db: Session, user):
@@ -660,7 +869,7 @@ def _refresh_season_team_stats(db: Session, season_code: str):
             INSERT INTO season_team_stats (season_id, team_id, total_points, wins, rank, updated_at, created_at)
             SELECT :season_id, t.id, COALESCE(SUM(h.points), 0), 0, NULL, NOW(), NOW()
             FROM teams t
-            LEFT JOIN team_contribution_history h
+            LEFT JOIN contribution_history h
               ON h.team_id = t.id AND h.season_id = :season_code
             GROUP BY t.id
             ON CONFLICT (season_id, team_id)
@@ -919,6 +1128,133 @@ def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def _normalize_emoji_value(value: str) -> str:
+    return unicodedata.normalize("NFC", (value or "").strip())
+
+
+def _normalize_emoji_sequence(values: list[str]) -> list[str]:
+    return [_normalize_emoji_value(value) for value in values]
+
+
+def _validate_emoji_sequence(values: list[str]) -> tuple[bool, str, list[str]]:
+    if not isinstance(values, list):
+        return False, "Emoji sequence is required.", []
+    normalized = _normalize_emoji_sequence(values)
+    if len(normalized) != RECOVERY_EMOJI_COUNT:
+        return False, "Please choose exactly 4 emojis.", []
+    if any(not emoji for emoji in normalized):
+        return False, "Please choose exactly 4 emojis.", []
+    if len(set(normalized)) != RECOVERY_EMOJI_COUNT:
+        return False, "Duplicate emojis are not allowed.", []
+    return True, "", normalized
+
+
+def _emoji_sequence_payload(sequence: list[str]) -> str:
+    return json.dumps(sequence, ensure_ascii=False, separators=(",", ":"))
+
+
+def _hash_emoji_sequence(sequence: list[str], salt: Optional[bytes] = None) -> str:
+    normalized = _normalize_emoji_sequence(sequence)
+    salt_bytes = salt or secrets.token_bytes(16)
+    payload = _emoji_sequence_payload(normalized).encode("utf-8")
+    derived = hashlib.pbkdf2_hmac("sha256", payload, salt_bytes, 210000)
+    return "pbkdf2_sha256$210000${}${}".format(
+        salt_bytes.hex(),
+        derived.hex(),
+    )
+
+
+def _verify_emoji_hash(sequence: list[str], stored_hash: str) -> bool:
+    try:
+        algorithm, iterations, salt_hex, digest_hex = stored_hash.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        rounds = int(iterations)
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(digest_hex)
+    except Exception:
+        return False
+
+    payload = _emoji_sequence_payload(_normalize_emoji_sequence(sequence)).encode("utf-8")
+    actual = hashlib.pbkdf2_hmac("sha256", payload, salt, rounds)
+    return hmac.compare_digest(actual, expected)
+
+
+def _recovery_emojis_enabled(db: Session, user_id: int) -> bool:
+    row = db.query(UserRecoveryEmoji.id).filter(UserRecoveryEmoji.user_id == user_id).first()
+    return row is not None
+
+
+def _recovery_reset_token_hash(token: str) -> str:
+    return _sha256_text(token)
+
+
+def _issue_temporary_reset_token(db: Session, user_id: int) -> str:
+    token = secrets.token_urlsafe(32)
+    token_hash = _recovery_reset_token_hash(token)
+    expires_at = datetime.utcnow() + timedelta(minutes=RECOVERY_TOKEN_TTL_MINUTES)
+    db.execute(
+        text("UPDATE password_reset_tokens SET used = TRUE WHERE user_id = :uid AND used = FALSE"),
+        {"uid": user_id},
+    )
+    db.execute(
+        text(
+            """
+            INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, used, created_at)
+            VALUES (:uid, :token_hash, :expires_at, FALSE, NOW())
+            """
+        ),
+        {"uid": user_id, "token_hash": token_hash, "expires_at": expires_at},
+    )
+    db.commit()
+    return token
+
+
+def _find_valid_reset_token(db: Session, token: str):
+    token_hash = _recovery_reset_token_hash(token)
+    return db.execute(
+        text(
+            """
+            SELECT id, user_id, expires_at, used
+            FROM password_reset_tokens
+            WHERE token_hash = :token_hash
+              AND used = FALSE
+              AND expires_at > NOW()
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ),
+        {"token_hash": token_hash},
+    ).mappings().first()
+
+
+def _finalize_reset_token(db: Session, token_id: int, user_id: int):
+    db.execute(
+        text(
+            """
+            UPDATE password_reset_tokens
+            SET used = TRUE
+            WHERE id = :token_id OR user_id = :uid
+            """
+        ),
+        {"token_id": token_id, "uid": user_id},
+    )
+
+
+def _session_response_payload(db: Session, user):
+    profile, selected_team = _profile_payload(db, user)
+    return {
+        "status": "ok",
+        "user": {"id": user.id, "name": user.name, "email": user.email},
+        "profile": profile,
+        "selected_team": selected_team,
+        "selectedTeam": selected_team,
+        "team_change_count": profile["team_change_count"] if profile else 0,
+        "teamChangeCount": profile["teamChangeCount"] if profile else 0,
+        "recovery_setup_required": not _recovery_emojis_enabled(db, user.id),
+    }
+
+
 def _send_password_reset_email(email: str, token: str):
     app_url = os.getenv("APP_PUBLIC_URL", "https://ahira.app").rstrip("/")
     reset_link = f"{app_url}/reset-password?email={email}&token={token}"
@@ -1073,6 +1409,7 @@ def _delete_user_owned_postgres(db: Session, user_id: int, *, delete_user: bool 
         "user_presence",
         "content_flags",
         "password_reset_tokens",
+        "user_recovery_emojis",
         "feed_comments",
         "feed_reactions",
         "feed_user_posts",
@@ -1163,16 +1500,7 @@ def register(body: RegisterBody, db: Session = Depends(get_db)):
     db.commit()
 
     token = crud.create_session(db, user.id)
-    profile, selected_team = _profile_payload(db, user)
-    resp = JSONResponse({
-        "status": "ok",
-        "user": {"id": user.id, "name": user.name, "email": user.email},
-        "profile": profile,
-        "selected_team": selected_team,
-        "selectedTeam": selected_team,
-        "team_change_count": profile["team_change_count"] if profile else 0,
-        "teamChangeCount": profile["teamChangeCount"] if profile else 0,
-    })
+    resp = JSONResponse(_session_response_payload(db, user))
     resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=SESSION_MAX_DAYS * 24 * 3600)
     return resp
 
@@ -1184,16 +1512,7 @@ def login(body: LoginBody, db: Session = Depends(get_db)):
         return JSONResponse({"status": "error", "message": "Incorrect email or password."}, status_code=401)
 
     token = crud.create_session(db, user.id)
-    profile, selected_team = _profile_payload(db, user)
-    resp = JSONResponse({
-        "status": "ok",
-        "user": {"id": user.id, "name": user.name, "email": user.email},
-        "profile": profile,
-        "selected_team": selected_team,
-        "selectedTeam": selected_team,
-        "team_change_count": profile["team_change_count"] if profile else 0,
-        "teamChangeCount": profile["teamChangeCount"] if profile else 0,
-    })
+    resp = JSONResponse(_session_response_payload(db, user))
     resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=SESSION_MAX_DAYS * 24 * 3600)
     return resp
 
@@ -1213,16 +1532,7 @@ def me(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return JSONResponse({"status": "guest"})
-    profile, selected_team = _profile_payload(db, user)
-    return JSONResponse({
-        "status": "ok",
-        "user": {"id": user.id, "name": user.name, "email": user.email},
-        "profile": profile,
-        "selected_team": selected_team,
-        "selectedTeam": selected_team,
-        "team_change_count": profile["team_change_count"] if profile else 0,
-        "teamChangeCount": profile["teamChangeCount"] if profile else 0,
-    })
+    return JSONResponse(_session_response_payload(db, user))
 
 
 @app.get("/users/me")
@@ -1244,107 +1554,181 @@ def users_me_profile(request: Request, db: Session = Depends(get_db)):
     }
 
 
+@app.post("/auth/setup-recovery-emojis")
+def setup_recovery_emojis(body: RecoveryEmojiSetupBody, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse({"status": "error", "message": "Please log in."}, status_code=401)
+
+    ok, message, sequence = _validate_emoji_sequence(body.emoji_sequence)
+    if not ok:
+        return JSONResponse({"status": "error", "message": message}, status_code=400)
+
+    existing = db.query(UserRecoveryEmoji).filter(UserRecoveryEmoji.user_id == user.id).first()
+    password_required = existing is not None
+    if password_required:
+        current_password = (body.current_password or "").strip()
+        if not current_password or not user.check_password(current_password):
+            return JSONResponse(
+                {"status": "error", "message": "Password confirmation failed."},
+                status_code=403,
+            )
+
+    hint = (body.recovery_hint or "").strip() or None
+    emoji_hash = _hash_emoji_sequence(sequence)
+    now = datetime.utcnow()
+    if existing:
+        existing.emoji_hash = emoji_hash
+        existing.recovery_hint = hint
+        existing.failed_attempts = 0
+        existing.locked_until = None
+        existing.updated_at = now
+    else:
+        existing = UserRecoveryEmoji(
+            user_id=user.id,
+            emoji_hash=emoji_hash,
+            recovery_hint=hint,
+            failed_attempts=0,
+            locked_until=None,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(existing)
+    db.commit()
+    return {
+        "status": "ok",
+        "message": "Recovery emojis saved.",
+        "recovery_setup_required": False,
+    }
+
+
 @app.post("/auth/forgot-password")
 def forgot_password(body: ForgotPasswordBody, db: Session = Depends(get_db)):
-    email = (body.email or "").strip().lower()
-    if not email:
-        return JSONResponse({"status": "error", "message": "Email is required."}, status_code=400)
-
-    user = crud.get_user_by_email(db, email)
-    if not user:
-        return {"status": "ok", "message": "If this email exists, a reset link has been sent."}
-
-    token = secrets.token_urlsafe(32)
-    token_hash = _sha256_text(token)
-    expires_at = datetime.utcnow() + timedelta(minutes=15)
-    db.execute(
-        text("UPDATE password_reset_tokens SET used = TRUE WHERE user_id = :uid AND used = FALSE"),
-        {"uid": user.id},
+    return JSONResponse(
+        {
+            "status": "error",
+            "message": "Password recovery now uses emoji phrases.",
+        },
+        status_code=410,
     )
-    db.execute(
-        text(
-            """
-            INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, used, created_at)
-            VALUES (:uid, :token_hash, :expires_at, FALSE, NOW())
-            """
-        ),
-        {"uid": user.id, "token_hash": token_hash, "expires_at": expires_at},
-    )
-    db.commit()
-
-    try:
-        _send_password_reset_email(email, token)
-    except Exception as exc:
-        print(f"[auth.reset] failed sending email for user_id={user.id}: {exc}")
-        return JSONResponse(
-            {"status": "error", "message": "Unable to send reset email right now."},
-            status_code=503,
-        )
-
-    return {"status": "ok", "message": "If this email exists, a reset link has been sent."}
 
 
 @app.post("/auth/verify-reset")
 def verify_reset(body: VerifyResetBody, db: Session = Depends(get_db)):
-    email = (body.email or "").strip().lower()
-    token = (body.token or "").strip()
-    if not email or not token:
-        return JSONResponse({"status": "error", "message": "Email and token are required."}, status_code=400)
-    user = crud.get_user_by_email(db, email)
-    if not user:
-        return JSONResponse({"status": "error", "message": "Invalid or expired token."}, status_code=400)
-    token_hash = _sha256_text(token)
-    row = db.execute(
-        text(
-            """
-            SELECT id
-            FROM password_reset_tokens
-            WHERE user_id = :uid
-              AND token_hash = :token_hash
-              AND used = FALSE
-              AND expires_at > NOW()
-            ORDER BY created_at DESC
-            LIMIT 1
-            """
-        ),
-        {"uid": user.id, "token_hash": token_hash},
-    ).mappings().first()
-    if not row:
-        return JSONResponse({"status": "error", "message": "Invalid or expired token."}, status_code=400)
-    return {"status": "ok", "message": "Token verified."}
+    return JSONResponse(
+        {
+            "status": "error",
+            "message": "Password recovery now uses emoji phrases.",
+        },
+        status_code=410,
+    )
 
 
 @app.post("/auth/reset-password")
 def reset_password(body: ResetPasswordBody, db: Session = Depends(get_db)):
+    return JSONResponse(
+        {
+            "status": "error",
+            "message": "Password recovery now uses emoji phrases.",
+        },
+        status_code=410,
+    )
+
+
+@app.post("/auth/verify-recovery-emojis")
+def verify_recovery_emojis(body: RecoveryEmojiVerifyBody, db: Session = Depends(get_db)):
     email = (body.email or "").strip().lower()
-    token = (body.token or "").strip()
-    new_password = body.newPassword or ""
-    if not email or not token or not new_password:
-        return JSONResponse({"status": "error", "message": "Email, token and new password are required."}, status_code=400)
-    if len(new_password) < 6:
-        return JSONResponse({"status": "error", "message": "Password must be at least 6 characters."}, status_code=400)
+    if not email:
+        return JSONResponse({"status": "error", "message": "Email is required."}, status_code=400)
+
+    ok, message, sequence = _validate_emoji_sequence(body.emoji_sequence)
+    if not ok:
+        return JSONResponse({"status": "error", "message": message}, status_code=400)
 
     user = crud.get_user_by_email(db, email)
     if not user:
-        return JSONResponse({"status": "error", "message": "Invalid or expired token."}, status_code=400)
-    token_hash = _sha256_text(token)
-    row = db.execute(
-        text(
-            """
-            SELECT id
-            FROM password_reset_tokens
-            WHERE user_id = :uid
-              AND token_hash = :token_hash
-              AND used = FALSE
-              AND expires_at > NOW()
-            ORDER BY created_at DESC
-            LIMIT 1
-            """
-        ),
-        {"uid": user.id, "token_hash": token_hash},
-    ).mappings().first()
+        return JSONResponse({"status": "error", "message": "Incorrect emoji sequence."}, status_code=401)
+
+    recovery = db.query(UserRecoveryEmoji).filter(UserRecoveryEmoji.user_id == user.id).first()
+    if not recovery:
+        return JSONResponse({"status": "error", "message": "Recovery emojis not set up yet."}, status_code=404)
+
+    now = datetime.utcnow()
+    if recovery.locked_until and recovery.locked_until > now:
+        remaining = max(1, int((recovery.locked_until - now).total_seconds() // 60) + 1)
+        return JSONResponse(
+            {
+                "status": "error",
+                "message": f"Recovery temporarily locked. Try again in about {remaining} minute(s).",
+                "locked_until": recovery.locked_until.isoformat(),
+            },
+            status_code=429,
+        )
+
+    if _verify_emoji_hash(sequence, recovery.emoji_hash):
+        recovery.failed_attempts = 0
+        recovery.locked_until = None
+        recovery.updated_at = now
+        db.commit()
+        temp_token = _issue_temporary_reset_token(db, user.id)
+        return {
+            "status": "ok",
+            "verified": True,
+            "temporary_reset_token": temp_token,
+            "expires_in_minutes": RECOVERY_TOKEN_TTL_MINUTES,
+        }
+
+    recovery.failed_attempts = int(recovery.failed_attempts or 0) + 1
+    if recovery.failed_attempts >= RECOVERY_MAX_FAILED_ATTEMPTS:
+        recovery.failed_attempts = RECOVERY_MAX_FAILED_ATTEMPTS
+        recovery.locked_until = now + timedelta(minutes=RECOVERY_LOCK_MINUTES)
+    recovery.updated_at = now
+    db.commit()
+    if recovery.locked_until and recovery.locked_until > now:
+        return JSONResponse(
+            {
+                "status": "error",
+                "message": "Recovery temporarily locked. Try again later.",
+                "failed_attempts": recovery.failed_attempts,
+                "locked_until": recovery.locked_until.isoformat(),
+            },
+            status_code=429,
+        )
+    return JSONResponse(
+        {
+            "status": "error",
+            "message": "Incorrect emoji sequence.",
+            "failed_attempts": recovery.failed_attempts,
+        },
+        status_code=401,
+    )
+
+
+@app.post("/auth/reset-password-with-emojis")
+def reset_password_with_emojis(body: RecoveryEmojiResetBody, db: Session = Depends(get_db)):
+    token = (body.temporary_reset_token or "").strip()
+    new_password = (body.new_password or "").strip()
+    if not token or not new_password:
+        return JSONResponse(
+            {"status": "error", "message": "Temporary reset token and new password are required."},
+            status_code=400,
+        )
+    if len(new_password) < 6:
+        return JSONResponse({"status": "error", "message": "Password must be at least 6 characters."}, status_code=400)
+
+    row = _find_valid_reset_token(db, token)
     if not row:
-        return JSONResponse({"status": "error", "message": "Invalid or expired token."}, status_code=400)
+        return JSONResponse(
+            {"status": "error", "message": "Expired token."},
+            status_code=400,
+        )
+
+    user = db.query(User).filter(User.id == int(row["user_id"])).first()
+    if not user:
+        return JSONResponse(
+            {"status": "error", "message": "Expired token."},
+            status_code=400,
+        )
 
     new_hash = User.hash_password(new_password)
     db.execute(
@@ -1357,13 +1741,14 @@ def reset_password(body: ResetPasswordBody, db: Session = Depends(get_db)):
         ),
         {"uid": user.id, "password": new_hash, "password_hash": new_hash},
     )
-    db.execute(
-        text("UPDATE password_reset_tokens SET used = TRUE WHERE user_id = :uid"),
-        {"uid": user.id},
-    )
+    _finalize_reset_token(db, int(row["id"]), user.id)
     db.execute(text("DELETE FROM sessions WHERE user_id = :uid"), {"uid": user.id})
     db.commit()
-    return {"status": "ok", "message": "Password reset successful. Please login again."}
+
+    token = crud.create_session(db, user.id)
+    resp = JSONResponse(_session_response_payload(db, user))
+    resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=SESSION_MAX_DAYS * 24 * 3600)
+    return resp
 
 
 @app.post("/session/refresh")
@@ -1372,7 +1757,7 @@ def refresh_session(request: Request, db: Session = Depends(get_db)):
     if not user:
         return JSONResponse({"status": "error", "message": "Please log in."}, status_code=401)
     token = crud.create_session(db, user.id)
-    resp = JSONResponse({"status": "ok", "user": {"name": user.name, "email": user.email}})
+    resp = JSONResponse(_session_response_payload(db, user))
     resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=SESSION_MAX_DAYS * 24 * 3600)
     return resp
 
@@ -2358,6 +2743,19 @@ def run_feed_migrations(db: Session):
     CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_lookup
       ON password_reset_tokens (user_id, token_hash, used, expires_at);
 
+    CREATE TABLE IF NOT EXISTS user_recovery_emojis (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+      emoji_hash TEXT NOT NULL,
+      recovery_hint TEXT,
+      failed_attempts INT NOT NULL DEFAULT 0,
+      locked_until TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_recovery_emojis_user
+      ON user_recovery_emojis (user_id, updated_at DESC);
+
     CREATE TABLE IF NOT EXISTS teams (
       id BIGSERIAL PRIMARY KEY,
       name VARCHAR(64) UNIQUE NOT NULL,
@@ -3157,36 +3555,52 @@ def teams_me(request: Request, db: Session = Depends(get_db)):
 
 @app.post("/scores/submit")
 def submit_score(body: GameScoreBody, request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    game_id = (body.gameId or "").strip().lower()
-    if not game_id:
-        return JSONResponse({"status": "error", "message": "gameId required"}, status_code=400)
+    user = None
+    try:
+        user, err = _require_user(request, db)
+        if err:
+            return err
+        game_id = (body.gameId or "").strip().lower()
+        if not game_id:
+            return JSONResponse({"status": "error", "message": "gameId required"}, status_code=400)
 
-    sid = body.seasonId or _season_id()
-    _ensure_season_row(db, sid)
-    idempotency_key = (body.idempotencyKey or f"{game_id}_{uuid.uuid4().hex}")[:128]
-    flags = _anti_cheat_flags(db, user.id, game_id, int(body.score), idempotency_key)
-    team_row = db.execute(text("SELECT team_id FROM user_profiles WHERE user_id = :uid"), {"uid": user.id}).mappings().first()
-    team_id = team_row["team_id"] if team_row else None
-    contribution_points = int(body.contributionPoints or 0)
-    xp_earned = int(body.xpEarned or 0)
+        started_at = datetime.utcnow()
+        sid = body.seasonId or _season_id()
+        _ensure_season_row(db, sid)
+        idempotency_key = (body.idempotencyKey or f"{game_id}_{uuid.uuid4().hex}")[:128]
+        score = int(body.score or 0)
+        contribution_points = int(body.contributionPoints or 0)
+        if contribution_points <= 0 and score > 0:
+            contribution_points = max(1, round(score * 0.7))
+        xp_earned = int(body.xpEarned or 0)
+        if xp_earned <= 0 and score > 0:
+            xp_earned = max(1, round(score * 0.12))
 
-    team_points_before = None
-    if team_id is not None:
-        before_row = db.execute(
-            text("SELECT total_points FROM teams WHERE id = :tid"),
+        flags = _anti_cheat_flags(db, user.id, game_id, score, idempotency_key)
+        resolved_team = _resolve_submission_team(db, user.id)
+        if resolved_team is None:
+            db.rollback()
+            print(
+                f"[scores.submit] rejected user_id={user.id} game_id={game_id} "
+                f"reason=no_valid_team score={score}"
+            )
+            return JSONResponse(
+                {"status": "error", "message": "Please select a team before submitting scores."},
+                status_code=400,
+            )
+        team_id, team_name = resolved_team
+
+        print(
+            f"[scores.submit] begin user_id={user.id} game_id={game_id} score={score} "
+            f"team_id={team_id} team_name={team_name} contribution_points={contribution_points} xp={xp_earned}"
+        )
+
+        team_points_before = db.execute(
+            text("SELECT COALESCE(total_points, 0) AS total_points FROM teams WHERE id = :tid"),
             {"tid": team_id},
         ).mappings().first()
-        team_points_before = int((before_row or {}).get("total_points") or 0)
+        team_points_before = int((team_points_before or {}).get("total_points") or 0)
 
-    print(
-        f"[scores.submit] score received user_id={user.id} team_id={team_id} "
-        f"game_id={game_id} score={int(body.score)} points_earned={contribution_points}"
-    )
-
-    try:
         inserted = db.execute(
             text(
                 """
@@ -3204,210 +3618,170 @@ def submit_score(body: GameScoreBody, request: Request, db: Session = Depends(ge
                 "team_id": team_id,
                 "season_id": sid,
                 "game_id": game_id,
-                "score": int(body.score),
+                "score": score,
                 "xp_earned": xp_earned,
                 "contribution_points": contribution_points,
-                "anti_cheat_metadata": str((body.antiCheatMetadata or {})).replace("'", '"'),
-                "anti_cheat_flags": str(flags).replace("'", '"'),
+                "anti_cheat_metadata": json.dumps(body.antiCheatMetadata or {}),
+                "anti_cheat_flags": json.dumps(flags),
                 "is_suspicious": len(flags) > 0,
             },
         ).mappings().first()
-    except Exception as exc:
-        print(f"[scores.submit] insert failed user_id={user.id} key={idempotency_key} error={exc}")
-        db.rollback()
-        existing = db.execute(
-            text("SELECT id, created_at FROM game_score_submissions WHERE user_id = :uid AND idempotency_key = :k"),
-            {"uid": user.id, "k": idempotency_key},
-        ).mappings().first()
-        if existing:
-            return {"status": "ok", "deduplicated": True, "submissionId": existing["id"], "createdAt": existing["created_at"].isoformat()}
-        raise
 
-    db.execute(text("INSERT INTO user_profiles (user_id) VALUES (:uid) ON CONFLICT (user_id) DO NOTHING"), {"uid": user.id})
-    db.execute(
-        text(
-            """
-            UPDATE user_profiles
-            SET xp = xp + :xp,
-                contribution_points = contribution_points + :cp,
-                updated_at = NOW()
-            WHERE user_id = :uid
-            """
-        ),
-        {"uid": user.id, "xp": xp_earned, "cp": contribution_points},
-    )
-    if team_id is not None and contribution_points > 0:
-        db.execute(text("UPDATE teams SET total_points = total_points + :cp, updated_at = NOW() WHERE id = :tid"), {"cp": contribution_points, "tid": team_id})
+        db.execute(text("INSERT INTO user_profiles (user_id) VALUES (:uid) ON CONFLICT (user_id) DO NOTHING"), {"uid": user.id})
         db.execute(
             text(
                 """
-                INSERT INTO team_contribution_history (user_id, team_id, season_id, game_score_submission_id, points, source)
-                VALUES (:uid, :tid, :sid, :gid, :points, 'game_score')
-                """
-            ),
-            {"uid": user.id, "tid": team_id, "sid": sid, "gid": inserted["id"], "points": contribution_points},
-        )
-        db.execute(
-            text(
-                """
-                INSERT INTO contribution_history (user_id, team_id, season_id, points, source, metadata)
-                VALUES (:uid, :tid, :sid, :points, 'game_score', CAST(:meta AS JSONB))
+                UPDATE user_profiles
+                SET xp = xp + :xp,
+                    contribution_points = contribution_points + :cp,
+                    team_id = COALESCE(team_id, :tid),
+                    selected_team_id = COALESCE(selected_team_id, :selected_team_id),
+                    selected_team_name = COALESCE(selected_team_name, :selected_team_name),
+                    updated_at = NOW()
+                WHERE user_id = :uid
                 """
             ),
             {
                 "uid": user.id,
+                "xp": xp_earned,
+                "cp": contribution_points,
                 "tid": team_id,
+                "selected_team_id": _team_slug(team_name),
+                "selected_team_name": team_name,
+            },
+        )
+
+        if contribution_points > 0:
+            db.execute(
+                text("UPDATE teams SET total_points = total_points + :cp, updated_at = NOW() WHERE id = :tid"),
+                {"cp": contribution_points, "tid": team_id},
+            )
+            db.execute(
+                text(
+                    """
+                    INSERT INTO team_contribution_history (user_id, team_id, season_id, game_score_submission_id, points, source)
+                    VALUES (:uid, :tid, :sid, :gid, :points, 'game_score')
+                    """
+                ),
+                {"uid": user.id, "tid": team_id, "sid": sid, "gid": inserted["id"], "points": contribution_points},
+            )
+            db.execute(
+                text(
+                    """
+                    INSERT INTO contribution_history (user_id, team_id, season_id, points, source, metadata)
+                    VALUES (:uid, :tid, :sid, :points, 'game_score', CAST(:meta AS JSONB))
+                    """
+                ),
+                {
+                    "uid": user.id,
+                    "tid": team_id,
+                    "sid": sid,
+                    "points": contribution_points,
+                    "meta": json.dumps({"game": game_id, "submissionId": inserted["id"]}),
+                },
+            )
+            db.execute(
+                text(
+                    """
+                    INSERT INTO season_team_stats (season_id, team_id, total_points, wins, rank, updated_at, created_at)
+                    SELECT s.id, :tid, :cp, 0, NULL, NOW(), NOW()
+                    FROM seasons s
+                    WHERE s.season_code = :sid
+                    ON CONFLICT (season_id, team_id)
+                    DO UPDATE SET total_points = season_team_stats.total_points + EXCLUDED.total_points, updated_at = NOW()
+                    """
+                ),
+                {"sid": sid, "tid": team_id, "cp": contribution_points},
+            )
+
+        db.execute(
+            text(
+                """
+                INSERT INTO game_sessions (user_id, game_id, season_id, team_id, ended_at, duration_ms, attempts, deaths, powerups)
+                VALUES (:uid, :gid, :sid, :tid, NOW(), :dur, :attempts, :deaths, :powerups)
+                """
+            ),
+            {
+                "uid": user.id,
+                "gid": game_id,
                 "sid": sid,
-                "points": contribution_points,
-                "meta": '{"game":"%s"}' % game_id,
+                "tid": team_id,
+                "dur": int(body.durationMs or 0),
+                "attempts": int(body.attempts or 1),
+                "deaths": int(body.deaths or 0),
+                "powerups": int(body.powerups or 0),
             },
         )
         db.execute(
             text(
                 """
-                INSERT INTO season_team_stats (season_id, team_id, total_points, wins, rank, updated_at, created_at)
-                SELECT s.id, :tid, :cp, 0, NULL, NOW(), NOW()
-                FROM seasons s
-                WHERE s.season_code = :sid
-                ON CONFLICT (season_id, team_id)
-                DO UPDATE SET total_points = season_team_stats.total_points + EXCLUDED.total_points, updated_at = NOW()
+                INSERT INTO game_statistics (user_id, game_id, season_id, total_score, total_sessions, total_duration_ms, total_deaths, total_powerups, best_score)
+                VALUES (:uid, :gid, :sid, :score, 1, :dur, :deaths, :powerups, :score)
+                ON CONFLICT (user_id, game_id, season_id)
+                DO UPDATE SET
+                  total_score = game_statistics.total_score + EXCLUDED.total_score,
+                  total_sessions = game_statistics.total_sessions + 1,
+                  total_duration_ms = game_statistics.total_duration_ms + EXCLUDED.total_duration_ms,
+                  total_deaths = game_statistics.total_deaths + EXCLUDED.total_deaths,
+                  total_powerups = game_statistics.total_powerups + EXCLUDED.total_powerups,
+                  best_score = GREATEST(game_statistics.best_score, EXCLUDED.best_score),
+                  updated_at = NOW()
                 """
             ),
-            {"sid": sid, "tid": team_id, "cp": contribution_points},
-        )
-    db.execute(
-        text(
-            """
-            INSERT INTO game_sessions (user_id, game_id, season_id, team_id, ended_at, duration_ms, attempts, deaths, powerups)
-            VALUES (:uid, :gid, :sid, :tid, NOW(), :dur, :attempts, :deaths, :powerups)
-            """
-        ),
-        {
-            "uid": user.id,
-            "gid": game_id,
-            "sid": sid,
-            "tid": team_id,
-            "dur": int(body.durationMs or 0),
-            "attempts": int(body.attempts or 1),
-            "deaths": int(body.deaths or 0),
-            "powerups": int(body.powerups or 0),
-        },
-    )
-    db.execute(
-        text(
-            """
-            INSERT INTO game_statistics (user_id, game_id, season_id, total_score, total_sessions, total_duration_ms, total_deaths, total_powerups, best_score)
-            VALUES (:uid, :gid, :sid, :score, 1, :dur, :deaths, :powerups, :score)
-            ON CONFLICT (user_id, game_id, season_id)
-            DO UPDATE SET
-              total_score = game_statistics.total_score + EXCLUDED.total_score,
-              total_sessions = game_statistics.total_sessions + 1,
-              total_duration_ms = game_statistics.total_duration_ms + EXCLUDED.total_duration_ms,
-              total_deaths = game_statistics.total_deaths + EXCLUDED.total_deaths,
-              total_powerups = game_statistics.total_powerups + EXCLUDED.total_powerups,
-              best_score = GREATEST(game_statistics.best_score, EXCLUDED.best_score),
-              updated_at = NOW()
-            """
-        ),
-        {
-            "uid": user.id,
-            "gid": game_id,
-            "sid": sid,
-            "score": int(body.score),
-            "dur": int(body.durationMs or 0),
-            "deaths": int(body.deaths or 0),
-            "powerups": int(body.powerups or 0),
-        },
-    )
-    for flag in flags:
-        db.execute(
-            text(
-                """
-                INSERT INTO anti_cheat_flags (user_id, submission_id, flag, metadata)
-                VALUES (:uid, :sidb, :flag, CAST(:meta AS JSONB))
-                """
-            ),
-            {"uid": user.id, "sidb": inserted["id"], "flag": flag, "meta": '{"game":"%s"}' % game_id},
-        )
-    _refresh_season_team_stats(db, sid)
-    leaderboard_rows = db.execute(
-        text(
-            """
-            SELECT
-              t.id,
-              t.name,
-              t.logo_url,
-              t.banner_url,
-              COALESCE(t.total_points, 0) AS total_points,
-              COALESCE(t.season_wins, 0) AS season_wins
-            FROM teams t
-            ORDER BY t.total_points DESC, t.name ASC
-            LIMIT 20
-            """
-        )
-    ).mappings().all()
-    leaderboard_payload = []
-    for idx, row in enumerate(leaderboard_rows, start=1):
-        slug = _team_slug(row["name"])
-        leaderboard_payload.append(
             {
-                "rank": idx,
-                "id": slug,
-                "teamId": slug,
-                "team_id": slug,
-                "numericId": int(row["id"]),
-                "name": row["name"],
-                "teamName": row["name"],
-                "points": int(row["total_points"] or 0),
-                "totalPoints": int(row["total_points"] or 0),
-                "seasonPoints": int(row["total_points"] or 0),
-                "season_points": int(row["total_points"] or 0),
-                "wins": int(row["season_wins"] or 0),
-                "seasonWins": int(row["season_wins"] or 0),
-                "logoUrl": row["logo_url"] or f"ahira://team/{slug}/logo",
-                "logo_url": row["logo_url"] or f"ahira://team/{slug}/logo",
-                "bannerUrl": row["banner_url"] or f"ahira://team/{slug}/banner",
-                "banner_url": row["banner_url"] or f"ahira://team/{slug}/banner",
-            }
+                "uid": user.id,
+                "gid": game_id,
+                "sid": sid,
+                "score": score,
+                "dur": int(body.durationMs or 0),
+                "deaths": int(body.deaths or 0),
+                "powerups": int(body.powerups or 0),
+            },
         )
-    db.execute(
-        text(
-            """
-            INSERT INTO leaderboard_cache (scope, season_id, game_id, payload, generated_at)
-            VALUES ('team', :sid, NULL, CAST(:payload AS JSONB), NOW())
-            ON CONFLICT (scope, season_id, game_id)
-            DO UPDATE SET payload = EXCLUDED.payload, generated_at = NOW(), updated_at = NOW()
-            """
-        ),
-        {"sid": sid, "payload": json.dumps(leaderboard_payload)},
-    )
-    print(f"[scores.submit] leaderboard cache regenerated season_id={sid} rows={len(leaderboard_payload)}")
+        for flag in flags:
+            db.execute(
+                text(
+                    """
+                    INSERT INTO anti_cheat_flags (user_id, submission_id, flag, metadata)
+                    VALUES (:uid, :sidb, :flag, CAST(:meta AS JSONB))
+                    """
+                ),
+                {"uid": user.id, "sidb": inserted["id"], "flag": flag, "meta": json.dumps({"game": game_id})},
+            )
 
-    team_points_after = None
-    if team_id is not None:
-        after_row = db.execute(
-            text("SELECT total_points FROM teams WHERE id = :tid"),
+        _refresh_season_team_stats(db, sid)
+        leaderboard_payload = _refresh_team_leaderboard_cache(db, sid, 20)
+
+        team_points_after = db.execute(
+            text("SELECT COALESCE(total_points, 0) AS total_points FROM teams WHERE id = :tid"),
             {"tid": team_id},
         ).mappings().first()
-        team_points_after = int((after_row or {}).get("total_points") or 0)
+        team_points_after = int((team_points_after or {}).get("total_points") or 0)
 
-    db.commit()
-    print(
-        f"[scores.submit] team_total_before={team_points_before} team_total_after={team_points_after} "
-        f"transaction committed submission_id={inserted['id']}"
-    )
+        db.commit()
+        elapsed_ms = int((datetime.utcnow() - started_at).total_seconds() * 1000)
+        print(
+            f"[scores.submit] committed user_id={user.id} game_id={game_id} team_id={team_id} "
+            f"score={score} points={contribution_points} before={team_points_before} after={team_points_after} "
+            f"rows={len(leaderboard_payload)} elapsed_ms={elapsed_ms} submission_id={inserted['id']}"
+        )
 
-    return {
-        "status": "ok",
-        "submissionId": inserted["id"],
-        "suspicious": len(flags) > 0,
-        "antiCheatFlags": flags,
-        "seasonId": sid,
-        "teamId": team_id,
-        "teamTotalBefore": team_points_before,
-        "teamTotalAfter": team_points_after,
-        "leaderboard": leaderboard_payload,
-    }
+        return {
+            "status": "ok",
+            "submissionId": inserted["id"],
+            "suspicious": len(flags) > 0,
+            "antiCheatFlags": flags,
+            "seasonId": sid,
+            "teamId": team_id,
+            "teamName": team_name,
+            "teamTotalBefore": team_points_before,
+            "teamTotalAfter": team_points_after,
+            "leaderboard": leaderboard_payload,
+        }
+    except Exception as exc:
+        db.rollback()
+        print(f"[scores.submit] rollback user_id={getattr(user, 'id', 'unknown')} error={exc}")
+        raise
 
 
 @app.post("/game-scores")
@@ -3533,86 +3907,16 @@ def team_leaderboard(seasonId: Optional[str] = Query(None), limit: int = Query(2
     sid = seasonId or _season_id()
     _ensure_season_row(db, sid)
     lim = min(max(1, limit), 20)
+    started_at = datetime.utcnow()
     _refresh_season_team_stats(db, sid)
-    rows = db.execute(
-        text(
-            """
-            SELECT
-              t.id,
-              t.name,
-              t.logo_url,
-              t.banner_url,
-              t.season_wins,
-              COALESCE(t.total_points, 0) AS season_points,
-              COALESCE(st.rank, 0) AS cached_rank
-            FROM teams t
-            LEFT JOIN seasons s ON s.season_code = :sid
-            LEFT JOIN season_team_stats st
-              ON st.team_id = t.id AND st.season_id = s.id
-            ORDER BY t.total_points DESC, t.name ASC
-            LIMIT :lim
-            """
-        ),
-        {"sid": sid, "lim": lim},
-    ).mappings().all()
-    items = []
-    for index, row in enumerate(rows, start=1):
-        slug = _team_slug(row["name"])
-        contributors = db.execute(
-            text(
-                """
-                SELECT user_id, username, COALESCE(SUM(contribution_points), 0) AS points
-                FROM game_score_submissions
-                WHERE season_id = :sid AND team_id = :tid
-                GROUP BY user_id, username
-                ORDER BY points DESC, username ASC
-                LIMIT 3
-                """
-            ),
-            {"sid": sid, "tid": row["id"]},
-        ).mappings().all()
-        points = int(row["season_points"] or 0)
-        item = {
-            "rank": index,
-            "id": slug,
-            "teamId": slug,
-            "team_id": slug,
-            "numericId": row["id"],
-            "name": row["name"],
-            "teamName": row["name"],
-            "points": points,
-            "totalPoints": points,
-            "seasonPoints": points,
-            "season_points": points,
-            "wins": int(row["season_wins"] or 0),
-            "seasonWins": int(row["season_wins"] or 0),
-            "logoUrl": row["logo_url"] or f"ahira://team/{slug}/logo",
-            "logo_url": row["logo_url"] or f"ahira://team/{slug}/logo",
-            "bannerUrl": row["banner_url"] or f"ahira://team/{slug}/banner",
-            "banner_url": row["banner_url"] or f"ahira://team/{slug}/banner",
-            "topContributors": [
-                {
-                    "userId": r["user_id"],
-                    "username": r["username"],
-                    "points": int(r["points"] or 0),
-                }
-                for r in contributors
-            ],
-        }
-        items.append(item)
-    db.execute(
-        text(
-            """
-            INSERT INTO leaderboard_cache (scope, season_id, game_id, payload, generated_at)
-            VALUES ('team', :sid, NULL, CAST(:payload AS JSONB), NOW())
-            ON CONFLICT (scope, season_id, game_id)
-            DO UPDATE SET payload = EXCLUDED.payload, generated_at = NOW(), updated_at = NOW()
-            """
-        ),
-        {"sid": sid, "payload": json.dumps(items)},
-    )
+    items, cache_hit = _get_team_leaderboard(db, sid, lim)
     db.commit()
-    return {"seasonId": sid, "items": items, "leaderboard": items}
+    elapsed_ms = int((datetime.utcnow() - started_at).total_seconds() * 1000)
+    print(
+        f"[leaderboard.team] season_id={sid} limit={lim} cache_hit={cache_hit} "
+        f"rows={len(items)} elapsed_ms={elapsed_ms}"
+    )
+    return {"seasonId": sid, "items": items, "leaderboard": items, "cacheHit": cache_hit}
 
 
 @app.get("/leaderboard/teams")
@@ -3630,7 +3934,7 @@ def season_stats(season_id: str, db: Session = Depends(get_db)):
             """
             SELECT t.id, t.name, COALESCE(SUM(h.points), 0) AS points
             FROM teams t
-            LEFT JOIN team_contribution_history h ON h.team_id = t.id AND h.season_id = :sid
+            LEFT JOIN contribution_history h ON h.team_id = t.id AND h.season_id = :sid
             GROUP BY t.id, t.name
             ORDER BY points DESC
             """
@@ -4379,3 +4683,225 @@ def update_medicine(medicine_id: int, body: MedicineUpdateBody, request: Request
             {"mid": medicine_id, "uid": user.id, "status": "taken" if body.taken else "skipped"},
         )
     db.commit()
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.delete("/medicines/{medicine_id}")
+def delete_medicine_row(medicine_id: int, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    row = db.execute(text("DELETE FROM medicines WHERE id = :mid AND user_id = :uid RETURNING id"), {"mid": medicine_id, "uid": user.id}).mappings().first()
+    db.commit()
+    if not row:
+        return JSONResponse({"status": "error", "message": "Medicine not found"}, status_code=404)
+    return {"status": "ok"}
+
+
+@app.get("/goals")
+def list_goals(request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    rows = db.execute(text("SELECT * FROM user_goals WHERE user_id = :uid ORDER BY created_at DESC"), {"uid": user.id}).mappings().all()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.post("/goals")
+def create_goal(body: GoalBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    title = (body.goalTitle or "").strip()
+    if not title:
+        return JSONResponse({"status": "error", "message": "goalTitle required"}, status_code=400)
+    row = db.execute(
+        text(
+            """
+            INSERT INTO user_goals (user_id, goal_title, goal_description, target_value, current_progress, completed)
+            VALUES (:uid, :title, :description, :target_value, :current_progress, :completed)
+            RETURNING *
+            """
+        ),
+        {
+            "uid": user.id,
+            "title": title,
+            "description": body.goalDescription,
+            "target_value": int(body.targetValue or 0),
+            "current_progress": int(body.currentProgress or 0),
+            "completed": bool(body.completed),
+        },
+    ).mappings().first()
+    db.commit()
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.get("/grocery/lists")
+def list_grocery_lists(request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    rows = db.execute(text("SELECT * FROM grocery_lists WHERE user_id = :uid ORDER BY created_at DESC"), {"uid": user.id}).mappings().all()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.post("/grocery/lists")
+def create_grocery_list(body: GroceryListBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    name = (body.listName or "").strip()
+    if not name:
+        return JSONResponse({"status": "error", "message": "listName required"}, status_code=400)
+    row = db.execute(text("INSERT INTO grocery_lists (user_id, list_name) VALUES (:uid, :name) RETURNING *"), {"uid": user.id, "name": name}).mappings().first()
+    db.commit()
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.get("/grocery/lists/{list_id}/items")
+def list_grocery_items(list_id: int, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    rows = db.execute(text("SELECT * FROM grocery_items WHERE user_id = :uid AND list_id = :lid ORDER BY created_at DESC"), {"uid": user.id, "lid": list_id}).mappings().all()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.post("/grocery/lists/{list_id}/items")
+def create_grocery_item(list_id: int, body: GroceryItemBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    parent = db.execute(text("SELECT id FROM grocery_lists WHERE id = :lid AND user_id = :uid"), {"lid": list_id, "uid": user.id}).first()
+    if not parent:
+        return JSONResponse({"status": "error", "message": "List not found"}, status_code=404)
+    name = (body.itemName or "").strip()
+    if not name:
+        return JSONResponse({"status": "error", "message": "itemName required"}, status_code=400)
+    row = db.execute(
+        text(
+            """
+            INSERT INTO grocery_items (list_id, user_id, item_name, quantity, completed)
+            VALUES (:lid, :uid, :name, :quantity, :completed)
+            RETURNING *
+            """
+        ),
+        {"lid": list_id, "uid": user.id, "name": name, "quantity": body.quantity, "completed": bool(body.completed)},
+    ).mappings().first()
+    db.commit()
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.put("/grocery/items/{item_id}")
+def update_grocery_item(item_id: int, body: GroceryItemUpdateBody, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    row = db.execute(
+        text(
+            """
+            UPDATE grocery_items
+            SET item_name = COALESCE(:name, item_name),
+                quantity = COALESCE(:quantity, quantity),
+                completed = COALESCE(:completed, completed),
+                updated_at = NOW()
+            WHERE id = :iid AND user_id = :uid
+            RETURNING *
+            """
+        ),
+        {"name": body.itemName, "quantity": body.quantity, "completed": body.completed, "iid": item_id, "uid": user.id},
+    ).mappings().first()
+    db.commit()
+    if not row:
+        return JSONResponse({"status": "error", "message": "Item not found"}, status_code=404)
+    return {"status": "ok", "item": dict(row)}
+
+
+@app.delete("/grocery/items/{item_id}")
+def delete_grocery_item(item_id: int, request: Request, db: Session = Depends(get_db)):
+    user, err = _require_user(request, db)
+    if err:
+        return err
+    row = db.execute(text("DELETE FROM grocery_items WHERE id = :iid AND user_id = :uid RETURNING id"), {"iid": item_id, "uid": user.id}).mappings().first()
+    db.commit()
+    if not row:
+        return JSONResponse({"status": "error", "message": "Item not found"}, status_code=404)
+    return {"status": "ok"}
+
+# ─────────────────────────────────────────────────────────────
+# DELETE MY DATA — wipes all user data from PostgreSQL
+# ─────────────────────────────────────────────────────────────
+@app.delete("/delete_my_data")
+def delete_my_data(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse({"status": "error", "message": "Not logged in."}, status_code=401)
+
+    _delete_user_owned_postgres(db, user.id, delete_user=False)
+    db.commit()
+    _delete_user_owned_mongo(user.id)
+
+    resp = JSONResponse({"status": "ok", "message": "All data deleted."})
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
+
+
+@app.delete("/delete_account")
+def delete_account(body: DeleteAccountBody, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse({"status": "error", "message": "Not logged in."}, status_code=401)
+    if not user.check_password(body.password):
+        return JSONResponse({"status": "error", "message": "Password confirmation failed."}, status_code=403)
+
+    user_id = user.id
+
+    _delete_user_owned_postgres(db, user_id, delete_user=True)
+    db.commit()
+    _delete_user_owned_mongo(user_id)
+
+    resp = JSONResponse({"status": "ok", "message": "Account permanently deleted."})
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
+
+
+# ─────────────────────────────────────────────────────────────
+# STATUS ENDPOINTS
+# ─────────────────────────────────────────────────────────────
+@app.get("/db-check")
+def db_check(db: Session = Depends(get_db)):
+    try:
+        db.execute(text("SELECT 1"))
+        return {"status": "ok", "message": "PostgreSQL connected ✅"}
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/db-status")
+def db_status(db: Session = Depends(get_db)):
+    try:
+        db.execute(text("SELECT 1"))
+        pg = {
+            "backend": "postgresql",
+            "postgres_url_set": True,
+            "psycopg2_available": True,
+            "status": "connected",
+            "user_count": db.query(User).count(),
+            "reminder_count": db.query(ReminderModel).count(),
+            "session_count": db.query(UserSession).count(),
+        }
+    except Exception as e:
+        pg = {"backend": "postgresql", "status": "error", "error": str(e)}
+
+    return {"postgresql": pg, "mongodb": mongo.get_status()}
+
+
+@app.get("/users")
+def list_users(db: Session = Depends(get_db)):
+    users = crud.list_users(db)
+    return {"users": [{"id": u.id, "name": u.name, "email": u.email} for u in users]}
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "services": {"postgresql": True, "mongodb": True}}
