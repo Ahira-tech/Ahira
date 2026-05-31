@@ -44,6 +44,10 @@ RECOVERY_EMOJI_COUNT = 4
 RECOVERY_MAX_FAILED_ATTEMPTS = 5
 RECOVERY_LOCK_MINUTES = 15
 RECOVERY_TOKEN_TTL_MINUTES = 10
+OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_DEFAULT_MODEL = "google/gemma-3n-e4b-it:free"
+OPENROUTER_TIMEOUT_SECONDS = 10
+OPENROUTER_CONNECT_TIMEOUT_SECONDS = 4
 
 
 # ── Startup ───────────────────────────────────────────────────
@@ -68,6 +72,7 @@ def startup():
         print("[Ahira] ❌ PostgreSQL failed")
     mongo.get_client()
     mongo.ensure_indexes()
+    _log_openrouter_startup_status()
 
 
 def _ensure_season_one_seed_guard(db: Session):
@@ -102,6 +107,18 @@ def _ensure_season_one_seed_guard(db: Session):
         )
     )
     db.commit()
+
+
+def _log_openrouter_startup_status():
+    key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    model = os.getenv("OPENROUTER_MODEL", "").strip() or OPENROUTER_DEFAULT_MODEL
+    if key:
+        print(f"[OpenRouter] ✅ API enabled model={model}")
+    else:
+        print(
+            f"[OpenRouter] ❌ OPENROUTER_API_KEY missing. "
+            f"API disabled model={model}"
+        )
 
 
 # ── Session helper ────────────────────────────────────────────
@@ -1119,8 +1136,6 @@ def _validate_emoji_sequence(values: list[str]) -> tuple[bool, str, list[str]]:
         return False, "Please choose exactly 4 emojis.", []
     if any(not emoji for emoji in normalized):
         return False, "Please choose exactly 4 emojis.", []
-    if len(set(normalized)) != RECOVERY_EMOJI_COUNT:
-        return False, "Duplicate emojis are not allowed.", []
     return True, "", normalized
 
 
@@ -1309,9 +1324,10 @@ def _send_password_reset_email(email: str, token: str):
             server.send_message(msg)
 
 
-def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = 22):
+def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = OPENROUTER_TIMEOUT_SECONDS):
     key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not key:
+        print("[OpenRouter] ❌ OPENROUTER_API_KEY missing; chat request cannot be sent")
         raise RuntimeError("openrouter_api_key_missing")
 
     model_candidates = []
@@ -1320,12 +1336,12 @@ def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = 22)
         model_candidates.append(primary_model)
     model_candidates.extend(
         [
-            "google/gemma-3n-e4b-it:free",
-            "google/gemma-3-27b-it:free",
-            "google/gemma-3-12b-it:free",
+            OPENROUTER_DEFAULT_MODEL,
             "mistralai/mistral-7b-instruct:free",
             "meta-llama/llama-3.1-8b-instruct:free",
             "qwen/qwen2.5-7b-instruct:free",
+            "google/gemma-3-12b-it:free",
+            "google/gemma-3-27b-it:free",
         ]
     )
 
@@ -1337,8 +1353,10 @@ def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = 22)
             continue
         seen.add(model)
         try:
+            started_at = datetime.utcnow()
+            print(f"[OpenRouter] request_start model={model}")
             response = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
+                OPENROUTER_CHAT_URL,
                 headers={
                     "Authorization": f"Bearer {key}",
                     "Content-Type": "application/json",
@@ -1349,13 +1367,19 @@ def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = 22)
                 json={
                     "model": model,
                     "messages": messages,
-                    "temperature": 0.78,
-                    "max_tokens": 420,
+                    "temperature": 0.72,
+                    "max_tokens": 320,
                 },
-                timeout=timeout_seconds,
+                timeout=(OPENROUTER_CONNECT_TIMEOUT_SECONDS, timeout_seconds),
             )
             if response.status_code < 200 or response.status_code >= 300:
+                body = (response.text or "")[:240]
                 last_error = RuntimeError(f"openrouter_http_{response.status_code}")
+                print(
+                    f"[OpenRouter] model={model} failed status={response.status_code} "
+                    f"afterMs={int((datetime.utcnow() - started_at).total_seconds() * 1000)} "
+                    f"body={body}"
+                )
                 continue
             decoded = response.json() if response.content else {}
             choices = decoded.get("choices") if isinstance(decoded, dict) else None
@@ -1379,10 +1403,21 @@ def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = 22)
                         content = "\n".join(parts).strip()
             if not content:
                 last_error = RuntimeError("openrouter_empty_response")
+                print(
+                    f"[OpenRouter] model={model} empty_response "
+                    f"afterMs={int((datetime.utcnow() - started_at).total_seconds() * 1000)}"
+                )
                 continue
+            usage = decoded.get("usage") if isinstance(decoded, dict) else None
+            print(
+                f"[OpenRouter] model={model} success "
+                f"afterMs={int((datetime.utcnow() - started_at).total_seconds() * 1000)} "
+                f"usage={usage}"
+            )
             return model, response
         except Exception as exc:
             last_error = exc
+            print(f"[OpenRouter] model={model} error={exc}")
             continue
 
     raise RuntimeError(f"openrouter_request_failed: {last_error}")
@@ -1858,7 +1893,13 @@ def chat_proxy(body: ChatBody, request: Request, db: Session = Depends(get_db)):
                 raise RuntimeError("openrouter_empty_response")
             total_ms = int((datetime.utcnow() - started_at).total_seconds() * 1000)
             print(f"[chat.proxy] final response delivered user_id={user.id} totalMs={total_ms}")
-            return {"status": "ok", "reply": content}
+            return {
+                "status": "ok",
+                "reply": content,
+                "used_fallback": False,
+                "provider": "openrouter",
+                "model": model,
+            }
         except Exception as exc:
             last_error = exc
             elapsed_ms = int((datetime.utcnow() - run_started).total_seconds() * 1000)
@@ -1877,6 +1918,8 @@ def chat_proxy(body: ChatBody, request: Request, db: Session = Depends(get_db)):
         "status": "ok",
         "reply": fallback_reply,
         "used_fallback": True,
+        "provider": "fallback",
+        "fallback_reason": str(last_error) if last_error else "openrouter_unavailable",
     }
 
 
@@ -4520,377 +4563,3 @@ def create_user_habit(body: UserHabitBody, request: Request, db: Session = Depen
 @app.post("/habits/{habit_id}/logs")
 def create_habit_log(habit_id: int, body: HabitLogBody, request: Request, db: Session = Depends(get_db)):
     user, err = _require_user(request, db)
-    if err:
-        return err
-    habit = db.execute(text("SELECT id FROM user_habits WHERE id = :hid AND user_id = :uid"), {"hid": habit_id, "uid": user.id}).first()
-    if not habit:
-        return JSONResponse({"status": "error", "message": "Habit not found"}, status_code=404)
-    completed_at = _safe_iso_datetime(body.completedAt, datetime.utcnow())
-    row = db.execute(
-        text("INSERT INTO habit_logs (habit_id, user_id, completed_at) VALUES (:hid, :uid, :completed_at) RETURNING *"),
-        {"hid": habit_id, "uid": user.id, "completed_at": completed_at},
-    ).mappings().first()
-    db.execute(text("UPDATE user_habits SET current_streak = current_streak + 1, best_streak = GREATEST(best_streak, current_streak + 1), updated_at = NOW() WHERE id = :hid"), {"hid": habit_id})
-    db.commit()
-    return {"status": "ok", "item": dict(row)}
-
-
-@app.get("/wellness/logs")
-def list_wellness_logs(request: Request, limit: int = Query(100), db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    rows = db.execute(text("SELECT * FROM wellness_logs WHERE user_id = :uid ORDER BY created_at DESC LIMIT :lim"), {"uid": user.id, "lim": min(max(1, limit), 500)}).mappings().all()
-    return {"items": [dict(r) for r in rows]}
-
-
-@app.post("/wellness/logs")
-def create_wellness_log(body: WellnessLogBody, request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    row = db.execute(
-        text(
-            """
-            INSERT INTO wellness_logs (user_id, mood, sleep_hours, stress_level, energy_level, notes)
-            VALUES (:uid, :mood, :sleep_hours, :stress_level, :energy_level, :notes)
-            RETURNING *
-            """
-        ),
-        {
-            "uid": user.id,
-            "mood": body.mood,
-            "sleep_hours": body.sleepHours,
-            "stress_level": body.stressLevel,
-            "energy_level": body.energyLevel,
-            "notes": body.notes,
-        },
-    ).mappings().first()
-    db.commit()
-    return {"status": "ok", "item": dict(row)}
-
-
-@app.get("/medicines")
-def list_medicines(request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    rows = db.execute(text("SELECT * FROM medicines WHERE user_id = :uid ORDER BY created_at DESC"), {"uid": user.id}).mappings().all()
-    return {"items": [dict(r) for r in rows]}
-
-
-@app.post("/medicines")
-def create_medicine(body: MedicineBody, request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    name = (body.medicineName or "").strip()
-    if not name:
-        return JSONResponse({"status": "error", "message": "medicineName required"}, status_code=400)
-    row = db.execute(
-        text(
-            """
-            INSERT INTO medicines (user_id, medicine_name, dosage, first_time, second_time, third_time, is_combined, notes)
-            VALUES (:uid, :name, :dosage, :first_time, :second_time, :third_time, :is_combined, :notes)
-            RETURNING *
-            """
-        ),
-        {
-            "uid": user.id,
-            "name": name,
-            "dosage": body.dosage,
-            "first_time": body.firstTime,
-            "second_time": body.secondTime,
-            "third_time": body.thirdTime,
-            "is_combined": bool(body.isCombined),
-            "notes": body.notes,
-        },
-    ).mappings().first()
-    db.commit()
-    return {"status": "ok", "item": dict(row)}
-
-
-@app.post("/medicines/{medicine_id}/logs")
-def create_medicine_log(medicine_id: int, body: MedicineLogBody, request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    med = db.execute(text("SELECT id FROM medicines WHERE id = :mid AND user_id = :uid"), {"mid": medicine_id, "uid": user.id}).first()
-    if not med:
-        return JSONResponse({"status": "error", "message": "Medicine not found"}, status_code=404)
-    status = (body.status or "").strip().lower()
-    if status not in {"taken", "skipped", "snoozed"}:
-        return JSONResponse({"status": "error", "message": "invalid status"}, status_code=400)
-    taken_at = _safe_iso_datetime(body.takenAt, datetime.utcnow())
-    row = db.execute(
-        text("INSERT INTO medicine_logs (medicine_id, user_id, taken_at, status) VALUES (:mid, :uid, :taken_at, :status) RETURNING *"),
-        {"mid": medicine_id, "uid": user.id, "taken_at": taken_at, "status": status},
-    ).mappings().first()
-    db.commit()
-    return {"status": "ok", "item": dict(row)}
-
-
-@app.put("/medicines/{medicine_id}")
-def update_medicine(medicine_id: int, body: MedicineUpdateBody, request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    exists = db.execute(text("SELECT id FROM medicines WHERE id = :mid AND user_id = :uid"), {"mid": medicine_id, "uid": user.id}).first()
-    if not exists:
-        return JSONResponse({"status": "error", "message": "Medicine not found"}, status_code=404)
-    row = db.execute(
-        text(
-            """
-            UPDATE medicines
-            SET medicine_name = COALESCE(:name, medicine_name),
-                dosage = COALESCE(:dosage, dosage),
-                first_time = COALESCE(:first_time, first_time),
-                second_time = COALESCE(:second_time, second_time),
-                third_time = COALESCE(:third_time, third_time),
-                is_combined = COALESCE(:is_combined, is_combined),
-                notes = COALESCE(:notes, notes),
-                updated_at = NOW()
-            WHERE id = :mid AND user_id = :uid
-            RETURNING *
-            """
-        ),
-        {
-            "name": body.medicineName,
-            "dosage": body.dosage,
-            "first_time": body.firstTime,
-            "second_time": body.secondTime,
-            "third_time": body.thirdTime,
-            "is_combined": body.isCombined,
-            "notes": body.notes,
-            "mid": medicine_id,
-            "uid": user.id,
-        },
-    ).mappings().first()
-    if body.taken is not None:
-        db.execute(
-            text("INSERT INTO medicine_logs (medicine_id, user_id, taken_at, status) VALUES (:mid, :uid, NOW(), :status)"),
-            {"mid": medicine_id, "uid": user.id, "status": "taken" if body.taken else "skipped"},
-        )
-    db.commit()
-    return {"status": "ok", "item": dict(row)}
-
-
-@app.delete("/medicines/{medicine_id}")
-def delete_medicine_row(medicine_id: int, request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    row = db.execute(text("DELETE FROM medicines WHERE id = :mid AND user_id = :uid RETURNING id"), {"mid": medicine_id, "uid": user.id}).mappings().first()
-    db.commit()
-    if not row:
-        return JSONResponse({"status": "error", "message": "Medicine not found"}, status_code=404)
-    return {"status": "ok"}
-
-
-@app.get("/goals")
-def list_goals(request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    rows = db.execute(text("SELECT * FROM user_goals WHERE user_id = :uid ORDER BY created_at DESC"), {"uid": user.id}).mappings().all()
-    return {"items": [dict(r) for r in rows]}
-
-
-@app.post("/goals")
-def create_goal(body: GoalBody, request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    title = (body.goalTitle or "").strip()
-    if not title:
-        return JSONResponse({"status": "error", "message": "goalTitle required"}, status_code=400)
-    row = db.execute(
-        text(
-            """
-            INSERT INTO user_goals (user_id, goal_title, goal_description, target_value, current_progress, completed)
-            VALUES (:uid, :title, :description, :target_value, :current_progress, :completed)
-            RETURNING *
-            """
-        ),
-        {
-            "uid": user.id,
-            "title": title,
-            "description": body.goalDescription,
-            "target_value": int(body.targetValue or 0),
-            "current_progress": int(body.currentProgress or 0),
-            "completed": bool(body.completed),
-        },
-    ).mappings().first()
-    db.commit()
-    return {"status": "ok", "item": dict(row)}
-
-
-@app.get("/grocery/lists")
-def list_grocery_lists(request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    rows = db.execute(text("SELECT * FROM grocery_lists WHERE user_id = :uid ORDER BY created_at DESC"), {"uid": user.id}).mappings().all()
-    return {"items": [dict(r) for r in rows]}
-
-
-@app.post("/grocery/lists")
-def create_grocery_list(body: GroceryListBody, request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    name = (body.listName or "").strip()
-    if not name:
-        return JSONResponse({"status": "error", "message": "listName required"}, status_code=400)
-    row = db.execute(text("INSERT INTO grocery_lists (user_id, list_name) VALUES (:uid, :name) RETURNING *"), {"uid": user.id, "name": name}).mappings().first()
-    db.commit()
-    return {"status": "ok", "item": dict(row)}
-
-
-@app.get("/grocery/lists/{list_id}/items")
-def list_grocery_items(list_id: int, request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    rows = db.execute(text("SELECT * FROM grocery_items WHERE user_id = :uid AND list_id = :lid ORDER BY created_at DESC"), {"uid": user.id, "lid": list_id}).mappings().all()
-    return {"items": [dict(r) for r in rows]}
-
-
-@app.post("/grocery/lists/{list_id}/items")
-def create_grocery_item(list_id: int, body: GroceryItemBody, request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    parent = db.execute(text("SELECT id FROM grocery_lists WHERE id = :lid AND user_id = :uid"), {"lid": list_id, "uid": user.id}).first()
-    if not parent:
-        return JSONResponse({"status": "error", "message": "List not found"}, status_code=404)
-    name = (body.itemName or "").strip()
-    if not name:
-        return JSONResponse({"status": "error", "message": "itemName required"}, status_code=400)
-    row = db.execute(
-        text(
-            """
-            INSERT INTO grocery_items (list_id, user_id, item_name, quantity, completed)
-            VALUES (:lid, :uid, :name, :quantity, :completed)
-            RETURNING *
-            """
-        ),
-        {"lid": list_id, "uid": user.id, "name": name, "quantity": body.quantity, "completed": bool(body.completed)},
-    ).mappings().first()
-    db.commit()
-    return {"status": "ok", "item": dict(row)}
-
-
-@app.put("/grocery/items/{item_id}")
-def update_grocery_item(item_id: int, body: GroceryItemUpdateBody, request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    row = db.execute(
-        text(
-            """
-            UPDATE grocery_items
-            SET item_name = COALESCE(:name, item_name),
-                quantity = COALESCE(:quantity, quantity),
-                completed = COALESCE(:completed, completed),
-                updated_at = NOW()
-            WHERE id = :iid AND user_id = :uid
-            RETURNING *
-            """
-        ),
-        {"name": body.itemName, "quantity": body.quantity, "completed": body.completed, "iid": item_id, "uid": user.id},
-    ).mappings().first()
-    db.commit()
-    if not row:
-        return JSONResponse({"status": "error", "message": "Item not found"}, status_code=404)
-    return {"status": "ok", "item": dict(row)}
-
-
-@app.delete("/grocery/items/{item_id}")
-def delete_grocery_item(item_id: int, request: Request, db: Session = Depends(get_db)):
-    user, err = _require_user(request, db)
-    if err:
-        return err
-    row = db.execute(text("DELETE FROM grocery_items WHERE id = :iid AND user_id = :uid RETURNING id"), {"iid": item_id, "uid": user.id}).mappings().first()
-    db.commit()
-    if not row:
-        return JSONResponse({"status": "error", "message": "Item not found"}, status_code=404)
-    return {"status": "ok"}
-
-# ─────────────────────────────────────────────────────────────
-# DELETE MY DATA — wipes all user data from PostgreSQL
-# ─────────────────────────────────────────────────────────────
-@app.delete("/delete_my_data")
-def delete_my_data(request: Request, db: Session = Depends(get_db)):
-    user = current_user(request, db)
-    if not user:
-        return JSONResponse({"status": "error", "message": "Not logged in."}, status_code=401)
-
-    _delete_user_owned_postgres(db, user.id, delete_user=False)
-    db.commit()
-    _delete_user_owned_mongo(user.id)
-
-    resp = JSONResponse({"status": "ok", "message": "All data deleted."})
-    resp.delete_cookie(SESSION_COOKIE)
-    return resp
-
-
-@app.delete("/delete_account")
-def delete_account(body: DeleteAccountBody, request: Request, db: Session = Depends(get_db)):
-    user = current_user(request, db)
-    if not user:
-        return JSONResponse({"status": "error", "message": "Not logged in."}, status_code=401)
-    if not user.check_password(body.password):
-        return JSONResponse({"status": "error", "message": "Password confirmation failed."}, status_code=403)
-
-    user_id = user.id
-
-    _delete_user_owned_postgres(db, user_id, delete_user=True)
-    db.commit()
-    _delete_user_owned_mongo(user_id)
-
-    resp = JSONResponse({"status": "ok", "message": "Account permanently deleted."})
-    resp.delete_cookie(SESSION_COOKIE)
-    return resp
-
-
-# ─────────────────────────────────────────────────────────────
-# STATUS ENDPOINTS
-# ─────────────────────────────────────────────────────────────
-@app.get("/db-check")
-def db_check(db: Session = Depends(get_db)):
-    try:
-        db.execute(text("SELECT 1"))
-        return {"status": "ok", "message": "PostgreSQL connected ✅"}
-    except Exception as e:
-        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
-
-
-@app.get("/db-status")
-def db_status(db: Session = Depends(get_db)):
-    try:
-        db.execute(text("SELECT 1"))
-        pg = {
-            "backend": "postgresql",
-            "postgres_url_set": True,
-            "psycopg2_available": True,
-            "status": "connected",
-            "user_count": db.query(User).count(),
-            "reminder_count": db.query(ReminderModel).count(),
-            "session_count": db.query(UserSession).count(),
-        }
-    except Exception as e:
-        pg = {"backend": "postgresql", "status": "error", "error": str(e)}
-
-    return {"postgresql": pg, "mongodb": mongo.get_status()}
-
-
-@app.get("/users")
-def list_users(db: Session = Depends(get_db)):
-    users = crud.list_users(db)
-    return {"users": [{"id": u.id, "name": u.name, "email": u.email} for u in users]}
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok", "services": {"postgresql": True, "mongodb": True}}
