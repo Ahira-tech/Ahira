@@ -40,7 +40,6 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 SESSION_COOKIE = "ahira_session"
 SESSION_MAX_DAYS = 30
-NEWS_API_URL = "https://newsapi.org/v2/top-headlines"
 RECOVERY_EMOJI_COUNT = 4
 RECOVERY_MAX_FAILED_ATTEMPTS = 5
 RECOVERY_LOCK_MINUTES = 15
@@ -903,58 +902,6 @@ def _require_user(request: Request, db: Session):
     return user, None
 
 
-def _fetch_news_for_language(lang: str):
-    api_key = os.getenv("NEWS_API_KEY", "").strip()
-    if not api_key:
-        return []
-
-    country = "in" if lang in {"hi", "mr"} else "us"
-    try:
-        r = requests.get(
-            NEWS_API_URL,
-            params={
-                "apiKey": api_key,
-                "country": country,
-                "pageSize": 20,
-            },
-            timeout=12,
-        )
-        if r.status_code != 200:
-            return []
-        payload = r.json()
-        articles = payload.get("articles") or []
-        rows = []
-        for idx, article in enumerate(articles):
-            title = (article.get("title") or "").strip()
-            desc = (article.get("description") or "").strip()
-            content = (desc or title)[:1200]
-            if not content:
-                continue
-            published_raw = article.get("publishedAt")
-            published_at = None
-            if published_raw:
-                try:
-                    published_at = datetime.fromisoformat(published_raw.replace("Z", "+00:00"))
-                except Exception:
-                    published_at = None
-
-            rows.append(
-                {
-                    "id": f"news_ext_{idx}",
-                    "type": "news_post",
-                    "content": content,
-                    "image_url": article.get("urlToImage"),
-                    "source_name": (article.get("source") or {}).get("name") or "News",
-                    "source_url": article.get("url"),
-                    "language": lang,
-                    "createdAt": (published_at or datetime.utcnow()).isoformat(),
-                }
-            )
-        return rows
-    except Exception:
-        return []
-
-
 def _fallback_generated_posts(lang: str):
     lines = {
         "en": [
@@ -1021,56 +968,84 @@ def _refresh_generated_posts(lang: str):
         "Language mix based on lang input. Keep simple words, warm tone, under 100 chars. "
         "Return strict JSON array with fields content,category,mood,anonymous_identity."
     )
-    try:
-        r = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://ahira.app",
-                "X-Title": "Ahira",
-            },
-            json={
-                "model": os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
-                "messages": [{"role": "user", "content": f"{prompt} lang={lang}"}],
-                "temperature": 0.8,
-                "max_tokens": 420,
-            },
-            timeout=18,
-        )
-        if r.status_code < 200 or r.status_code >= 300:
-            return _fallback_generated_posts(lang)
-        content = (((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
-        start = content.find("[")
-        end = content.rfind("]")
-        if start < 0 or end <= start:
-            return _fallback_generated_posts(lang)
-        import json
+    model_candidates = []
+    primary_model = os.getenv("OPENROUTER_MODEL", "").strip()
+    if primary_model:
+        model_candidates.append(primary_model)
+    model_candidates.extend(
+        [
+            "google/gemma-3n-e4b-it:free",
+            "google/gemma-3-27b-it:free",
+            "google/gemma-3-12b-it:free",
+            "mistralai/mistral-7b-instruct:free",
+            "meta-llama/llama-3.1-8b-instruct:free",
+            "qwen/qwen2.5-7b-instruct:free",
+        ]
+    )
 
-        data = json.loads(content[start : end + 1])
-        now = datetime.utcnow()
-        out = []
-        for idx, row in enumerate(data[:6]):
-            content_text = str(row.get("content", "")).strip()
-            out.append(
-                {
-                    "kind": "generated",
-                    "language": lang,
-                    "content": content_text,
-                    "category": str(row.get("category", "motivation")).strip().lower(),
-                    "mood": str(row.get("mood", "calm")).strip().lower(),
-                    "anonymous_identity": str(row.get("anonymous_identity", "")).strip(),
-                    "created_at": now - timedelta(minutes=idx * 13),
-                    "expires_at": now + timedelta(hours=24),
-                    "engagement_score": 30 + (idx * 8),
-                    "trending_score": 18 + (idx * 6),
-                    "reactions": {"relate": 7 + idx, "hug": 5 + idx, "support": 6 + idx, "feltThis": 8 + idx},
-                    "comment_count": 1 + idx,
-                }
+    import json
+
+    seen = set()
+    for model in model_candidates:
+        model = (model or "").strip()
+        if not model or model in seen:
+            continue
+        seen.add(model)
+        try:
+            r = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://ahira.app",
+                    "X-Title": "Ahira",
+                    "X-OpenRouter-Title": "Ahira",
+                },
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": f"{prompt} lang={lang}"}],
+                    "temperature": 0.8,
+                    "max_tokens": 420,
+                },
+                timeout=18,
             )
-        return [x for x in out if x["content"]]
-    except Exception:
-        return _fallback_generated_posts(lang)
+            if r.status_code < 200 or r.status_code >= 300:
+                continue
+            decoded = r.json() if r.content else {}
+            content = (((decoded.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+            start = content.find("[")
+            end = content.rfind("]")
+            if start < 0 or end <= start:
+                continue
+            data = json.loads(content[start : end + 1])
+            now = datetime.utcnow()
+            out = []
+            for idx, row in enumerate(data[:6]):
+                content_text = str(row.get("content", "")).strip()
+                out.append(
+                    {
+                        "kind": "generated",
+                        "language": lang,
+                        "content": content_text,
+                        "category": str(row.get("category", "motivation")).strip().lower(),
+                        "mood": str(row.get("mood", "calm")).strip().lower(),
+                        "anonymous_identity": str(row.get("anonymous_identity", "")).strip(),
+                        "created_at": now - timedelta(minutes=idx * 13),
+                        "expires_at": now + timedelta(hours=24),
+                        "engagement_score": 30 + (idx * 8),
+                        "trending_score": 18 + (idx * 6),
+                        "reactions": {"relate": 7 + idx, "hug": 5 + idx, "support": 6 + idx, "feltThis": 8 + idx},
+                        "comment_count": 1 + idx,
+                    }
+                )
+            items = [x for x in out if x["content"]]
+            if items:
+                print(f"[generated_posts] OpenRouter model={model} rows={len(items)}")
+                return items
+        except Exception as exc:
+            print(f"[generated_posts] model={model} error={exc}")
+            continue
+    return _fallback_generated_posts(lang)
 
 
 def _ensure_generated_posts(lang: str):
@@ -1338,24 +1313,92 @@ def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = 22)
     key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not key:
         raise RuntimeError("openrouter_api_key_missing")
-    model = os.getenv("OPENROUTER_MODEL", "google/gemma-3-27b-it:free").strip()
-    response = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": os.getenv("APP_PUBLIC_URL", "https://ahira.app"),
-            "X-Title": "Ahira",
-        },
-        json={
-            "model": model,
-            "messages": messages,
-            "temperature": 0.78,
-            "max_tokens": 420,
-        },
-        timeout=timeout_seconds,
+
+    model_candidates = []
+    primary_model = os.getenv("OPENROUTER_MODEL", "").strip()
+    if primary_model:
+        model_candidates.append(primary_model)
+    model_candidates.extend(
+        [
+            "google/gemma-3n-e4b-it:free",
+            "google/gemma-3-27b-it:free",
+            "google/gemma-3-12b-it:free",
+            "mistralai/mistral-7b-instruct:free",
+            "meta-llama/llama-3.1-8b-instruct:free",
+            "qwen/qwen2.5-7b-instruct:free",
+        ]
     )
-    return model, response
+
+    seen = set()
+    last_error = None
+    for model in model_candidates:
+        model = (model or "").strip()
+        if not model or model in seen:
+            continue
+        seen.add(model)
+        try:
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": os.getenv("APP_PUBLIC_URL", "https://ahira.app"),
+                    "X-Title": "Ahira",
+                    "X-OpenRouter-Title": "Ahira",
+                },
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "temperature": 0.78,
+                    "max_tokens": 420,
+                },
+                timeout=timeout_seconds,
+            )
+            if response.status_code < 200 or response.status_code >= 300:
+                last_error = RuntimeError(f"openrouter_http_{response.status_code}")
+                continue
+            decoded = response.json() if response.content else {}
+            choices = decoded.get("choices") if isinstance(decoded, dict) else None
+            content = ""
+            if isinstance(choices, list) and choices:
+                first = choices[0] if isinstance(choices[0], dict) else {}
+                message = first.get("message") if isinstance(first, dict) else {}
+                if isinstance(message, dict):
+                    raw = message.get("content")
+                    if isinstance(raw, str):
+                        content = raw.strip()
+                    elif isinstance(raw, list):
+                        parts = []
+                        for part in raw:
+                            if isinstance(part, dict):
+                                text = str(part.get("text") or "").strip()
+                                if text:
+                                    parts.append(text)
+                            elif isinstance(part, str) and part.strip():
+                                parts.append(part.strip())
+                        content = "\n".join(parts).strip()
+            if not content:
+                last_error = RuntimeError("openrouter_empty_response")
+                continue
+            return model, response
+        except Exception as exc:
+            last_error = exc
+            continue
+
+    raise RuntimeError(f"openrouter_request_failed: {last_error}")
+
+
+def _fallback_chat_reply(message: str) -> str:
+    text = (message or "").strip().lower()
+    if not text:
+        return "I am here with you. Tell me what is on your mind, and we will take it one small step at a time."
+    if any(word in text for word in ["sad", "down", "cry", "lonely", "alone", "anxious", "panic"]):
+        return "That sounds really heavy. Take one slow breath with me. Tell me the hardest part, and I will stay with you through it."
+    if any(word in text for word in ["remind", "reminder", "remember", "dont forget", "don't forget"]):
+        return "I can help with that. Tell me the task and the time, and I will help you plan it simply."
+    if any(word in text for word in ["plan", "schedule", "todo", "to do", "task"]):
+        return "Let us make it simple. Share the one most important task first, and I will help break it into small steps."
+    return "I am here with you. Share a little more, and I will help you sort it out gently."
 
 
 def _safe_delete_sql(db: Session, sql: str, params: dict, label: str):
@@ -1825,8 +1868,16 @@ def chat_proxy(body: ChatBody, request: Request, db: Session = Depends(get_db)):
                 continue
 
     total_ms = int((datetime.utcnow() - started_at).total_seconds() * 1000)
-    print(f"[chat.proxy] fallback activated user_id={user.id} totalMs={total_ms} reason={last_error}")
-    return JSONResponse({"status": "error", "message": "Live chat unavailable."}, status_code=503)
+    fallback_reply = _fallback_chat_reply(message)
+    print(
+        f"[chat.proxy] fallback activated user_id={user.id} totalMs={total_ms} "
+        f"reason={last_error}"
+    )
+    return {
+        "status": "ok",
+        "reply": fallback_reply,
+        "used_fallback": True,
+    }
 
 
 # ─────────────────────────────────────────────────────────────
@@ -2033,8 +2084,7 @@ def get_feeds(
         expires_at,
         4 AS priority,
         CASE WHEN language = :lang THEN 0 WHEN language = 'en' THEN 1 ELSE 2 END AS language_rank,
-        created_at AS secondary_order,
-        FALSE AS is_news
+        created_at AS secondary_order
       FROM feed_user_posts
       WHERE language IN (:lang, 'en')
         AND (:activeOnly = FALSE OR deleted = FALSE)
@@ -2056,54 +2106,11 @@ def get_feeds(
         NULL::timestamptz AS expires_at,
         1 AS priority,
         CASE WHEN target_language = :lang THEN 0 WHEN target_language = 'en' THEN 1 ELSE 2 END AS language_rank,
-        created_at AS secondary_order,
-        TRUE AS is_news
+        created_at AS secondary_order
       FROM sponsored_posts
       WHERE is_active = TRUE
         AND CURRENT_DATE BETWEEN start_date AND end_date
         AND target_language IN (:lang, 'en')
-    ),
-    important_news AS (
-      SELECT
-        'news_' || id::text AS id,
-        'news_post'::text AS type,
-        short_summary AS content,
-        image_url,
-        source_name,
-        source_url,
-        language,
-        'Daily Life ☕'::text AS category,
-        'calm'::text AS mood,
-        '🌙 Midnight Girl'::text AS anonymous_identity,
-        created_at,
-        NULL::timestamptz AS expires_at,
-        2 AS priority,
-        CASE WHEN language = :lang THEN 0 WHEN language = 'en' THEN 1 ELSE 2 END AS language_rank,
-        published_at AS secondary_order,
-        TRUE AS is_news
-      FROM news_posts
-      WHERE language IN (:lang, 'en') AND is_important = TRUE
-    ),
-    regular_news AS (
-      SELECT
-        'news_' || id::text AS id,
-        'news_post'::text AS type,
-        short_summary AS content,
-        image_url,
-        source_name,
-        source_url,
-        language,
-        'Daily Life ☕'::text AS category,
-        'calm'::text AS mood,
-        '🌙 Midnight Girl'::text AS anonymous_identity,
-        created_at,
-        NULL::timestamptz AS expires_at,
-        3 AS priority,
-        CASE WHEN language = :lang THEN 0 WHEN language = 'en' THEN 1 ELSE 2 END AS language_rank,
-        COALESCE(published_at, created_at) AS secondary_order,
-        TRUE AS is_news
-      FROM news_posts
-      WHERE language IN (:lang, 'en') AND COALESCE(is_important, FALSE) = FALSE
     ),
     ahira AS (
       SELECT
@@ -2121,8 +2128,7 @@ def get_feeds(
         NULL::timestamptz AS expires_at,
         5 AS priority,
         CASE WHEN language = :lang THEN 0 WHEN language = 'en' THEN 1 ELSE 2 END AS language_rank,
-        created_at AS secondary_order,
-        TRUE AS is_news
+        created_at AS secondary_order
       FROM ahira_picks
       WHERE language IN (:lang, 'en')
     )
@@ -2139,13 +2145,9 @@ def get_feeds(
       anonymous_identity,
       created_at AS "createdAt",
       expires_at AS "expiresAt",
-      is_news AS is_news_post
+      FALSE AS is_news_post
     FROM (
       SELECT * FROM sponsored
-      UNION ALL
-      SELECT * FROM important_news
-      UNION ALL
-      SELECT * FROM regular_news
       UNION ALL
       SELECT * FROM user_posts
       UNION ALL
@@ -2169,7 +2171,7 @@ def get_feeds(
 
     data = [dict(r) for r in rows]
     if not data:
-        data = _fetch_news_for_language(lang)
+        data = _fallback_generated_posts(lang)
 
     return {"items": data, "nextCursor": str(off + len(data)) if len(data) == lim else None}
 
@@ -2631,19 +2633,6 @@ def refresh_generated_posts(language: str = Query("en")):
 
 def run_feed_migrations(db: Session):
     migration_sql = """
-    DO $$
-    BEGIN
-      IF to_regclass('public.news_posts') IS NOT NULL THEN
-        ALTER TABLE news_posts
-          ALTER COLUMN language TYPE VARCHAR(10);
-        ALTER TABLE news_posts
-          ADD COLUMN IF NOT EXISTS is_important BOOLEAN NOT NULL DEFAULT FALSE;
-        CREATE INDEX IF NOT EXISTS idx_news_posts_created_at ON news_posts (created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_news_posts_language_created ON news_posts (language, created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_news_posts_type_language_created ON news_posts (language, is_important, created_at DESC);
-      END IF;
-    END $$;
-
     CREATE TABLE IF NOT EXISTS ahira_picks (
       id BIGSERIAL PRIMARY KEY,
       language VARCHAR(10) NOT NULL DEFAULT 'en',
