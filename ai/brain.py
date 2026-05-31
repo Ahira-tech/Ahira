@@ -1,3 +1,4 @@
+import os
 import re
 import json
 import urllib.request
@@ -14,7 +15,7 @@ from ai.reminders import add_reminder
 #   Body: {model, messages: [{role, content}], ...}
 # ─────────────────────────────────────────────────────────────
 
-OPENROUTER_API_KEY = "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"
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_URL     = "https://openrouter.ai/api/v1/chat/completions"
 
 # Free & reliable models on OpenRouter — try in order until one works
