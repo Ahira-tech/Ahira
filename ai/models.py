@@ -27,6 +27,12 @@ class User(Base):
     # relationships
     sessions   = relationship("UserSession", back_populates="user", cascade="all, delete")
     reminders  = relationship("Reminder",    back_populates="user", cascade="all, delete")
+    recovery_emojis = relationship(
+        "UserRecoveryEmoji",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
     @staticmethod
     def hash_password(pw: str) -> str:
@@ -67,3 +73,18 @@ class Reminder(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user       = relationship("User", back_populates="reminders")
+
+
+class UserRecoveryEmoji(Base):
+    __tablename__ = "user_recovery_emojis"
+
+    id              = Column(Integer, primary_key=True, index=True)
+    user_id         = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
+    emoji_hash      = Column(Text, nullable=False)
+    recovery_hint   = Column(Text, nullable=True)
+    failed_attempts = Column(Integer, nullable=False, default=0)
+    locked_until    = Column(DateTime, nullable=True)
+    created_at      = Column(DateTime, default=datetime.utcnow)
+    updated_at      = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user            = relationship("User", back_populates="recovery_emojis")
