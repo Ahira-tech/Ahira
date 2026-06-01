@@ -80,7 +80,9 @@ class UserRecoveryEmoji(Base):
 
     id              = Column(Integer, primary_key=True, index=True)
     user_id         = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
-    emoji_hash      = Column(Text, nullable=False)
+    emoji_sequence_hash = Column(Text, nullable=False)
+    emoji_sequence_preview = Column(Text, nullable=True)
+    emoji_hash      = Column(Text, nullable=True)
     recovery_hint   = Column(Text, nullable=True)
     failed_attempts = Column(Integer, nullable=False, default=0)
     locked_until    = Column(DateTime, nullable=True)
