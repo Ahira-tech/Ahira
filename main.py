@@ -12,6 +12,7 @@ import uuid
 import secrets
 import smtplib
 import ssl
+import traceback
 import unicodedata
 from base64 import urlsafe_b64encode, urlsafe_b64decode
 from datetime import datetime, timedelta
@@ -54,8 +55,7 @@ OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_PRIMARY_MODEL = "openai/gpt-4o-mini"
 OPENROUTER_DEFAULT_MODEL = OPENROUTER_PRIMARY_MODEL
 OPENROUTER_FALLBACK_MODELS = [
-    "google/gemini-2.0-flash-exp:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
+    "qwen/qwen-2.5-7b-instruct",
 ]
 OPENROUTER_TIMEOUT_SECONDS = 25
 OPENROUTER_CONNECT_TIMEOUT_SECONDS = 5
@@ -150,6 +150,34 @@ def _openrouter_model_candidates() -> list[str]:
         seen.add(model)
         ordered.append(model)
     return ordered
+
+
+def _extract_openrouter_content(decoded: dict, model: str) -> str:
+    choices = decoded.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise RuntimeError(f"openrouter_parse_missing_choices model={model}")
+    first = choices[0] if isinstance(choices[0], dict) else {}
+    message = first.get("message") if isinstance(first, dict) else {}
+    if not isinstance(message, dict):
+        raise RuntimeError(f"openrouter_parse_missing_message model={model}")
+    raw = message.get("content")
+    if isinstance(raw, str):
+        content = raw.strip()
+    elif isinstance(raw, list):
+        parts = []
+        for part in raw:
+            if isinstance(part, dict):
+                text = str(part.get("text") or "").strip()
+                if text:
+                    parts.append(text)
+            elif isinstance(part, str) and part.strip():
+                parts.append(part.strip())
+        content = "\n".join(parts).strip()
+    else:
+        content = ""
+    if not content:
+        raise RuntimeError(f"openrouter_parse_empty_content model={model}")
+    return content
 
 
 # ── Session helper ────────────────────────────────────────────
@@ -1373,7 +1401,7 @@ def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = OPE
         raise RuntimeError("openrouter_api_key_missing")
     print(
         f"[OpenRouter] API KEY FOUND model={OPENROUTER_DEFAULT_MODEL} "
-        f"candidateCount={len(_openrouter_model_candidates())}"
+        f"candidateCount={len(_openrouter_model_candidates())} keyLength={len(key)} url={OPENROUTER_CHAT_URL}"
     )
 
     seen = set()
@@ -1415,54 +1443,54 @@ def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = OPE
                 print(
                     f"[OpenRouter] RESPONSE STATUS={response.status_code} RESPONSE TIME={elapsed_ms}ms MODEL USED={model}"
                 )
+                raw_text = response.text or ""
                 if response.status_code < 200 or response.status_code >= 300:
-                    body = (response.text or "")[:240]
                     last_error = RuntimeError(f"openrouter_http_{response.status_code}")
                     print(
                         f"[OpenRouter] ERROR DETAILS model={model} failed status={response.status_code} "
-                        f"afterMs={elapsed_ms} body={body}"
+                        f"afterMs={elapsed_ms} body={raw_text[:1200]}"
                     )
                     if attempt == 0 and response.status_code >= 500:
                         print(f"[OpenRouter] retry triggered model={model} reason=http_{response.status_code}")
                         continue
                     break
-                decoded = response.json() if response.content else {}
+                try:
+                    decoded = response.json() if response.content else {}
+                except Exception as exc:
+                    last_error = RuntimeError(f"openrouter_json_parse_failed: {exc}")
+                    print(
+                        f"[OpenRouter] parsing error model={model} error={exc} raw={raw_text[:1200]}"
+                    )
+                    break
                 print(
                     f"[OpenRouter] RAW RESPONSE model={model} payload={json.dumps(decoded, ensure_ascii=False)[:500]}"
                 )
-                choices = decoded.get("choices") if isinstance(decoded, dict) else None
-                content = ""
-                if isinstance(choices, list) and choices:
-                    first = choices[0] if isinstance(choices[0], dict) else {}
-                    message = first.get("message") if isinstance(first, dict) else {}
-                    if isinstance(message, dict):
-                        raw = message.get("content")
-                        if isinstance(raw, str):
-                            content = raw.strip()
-                        elif isinstance(raw, list):
-                            parts = []
-                            for part in raw:
-                                if isinstance(part, dict):
-                                    text = str(part.get("text") or "").strip()
-                                    if text:
-                                        parts.append(text)
-                                elif isinstance(part, str) and part.strip():
-                                    parts.append(part.strip())
-                            content = "\n".join(parts).strip()
-                if not content:
-                    last_error = RuntimeError("openrouter_empty_response")
+                try:
+                    content = _extract_openrouter_content(decoded if isinstance(decoded, dict) else {}, model)
+                except Exception as exc:
+                    last_error = exc
                     print(
-                        f"[OpenRouter] ERROR DETAILS model={model} empty_response afterMs={elapsed_ms}"
+                        f"[OpenRouter] parsing error model={model} error={exc} raw={raw_text[:1200]}"
                     )
                     break
                 usage = decoded.get("usage") if isinstance(decoded, dict) else None
                 print(
                     f"[OpenRouter] model={model} success afterMs={elapsed_ms} usage={usage}"
                 )
-                return model, response
+                return {
+                    "model": model,
+                    "content": content,
+                    "status_code": response.status_code,
+                    "elapsed_ms": elapsed_ms,
+                    "raw_response": raw_text[:4000],
+                    "decoded": decoded,
+                }
             except Exception as exc:
                 last_error = exc
-                print(f"[OpenRouter] ERROR DETAILS model={model} attempt={attempt + 1} error={exc}")
+                print(
+                    f"[OpenRouter] ERROR DETAILS model={model} attempt={attempt + 1} error={exc} "
+                    f"stack={traceback.format_exc()}"
+                )
                 if attempt == 0:
                     print(f"[OpenRouter] retry triggered model={model} reason={exc}")
                     continue
@@ -1474,14 +1502,27 @@ def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = OPE
 def _fallback_chat_reply(message: str) -> str:
     text = (message or "").strip().lower()
     if not text:
-        return "I am here with you. Tell me what is on your mind, and we will take it one small step at a time."
+        return "OpenRouter is unavailable right now. Please check AI diagnostics for the exact error."
     if any(word in text for word in ["sad", "down", "cry", "lonely", "alone", "anxious", "panic"]):
         return "That sounds really heavy. Take one slow breath with me. Tell me the hardest part, and I will stay with you through it."
     if any(word in text for word in ["remind", "reminder", "remember", "dont forget", "don't forget"]):
         return "I can help with that. Tell me the task and the time, and I will help you plan it simply."
     if any(word in text for word in ["plan", "schedule", "todo", "to do", "task"]):
         return "Let us make it simple. Share the one most important task first, and I will help break it into small steps."
-    return "I am here with you. Share a little more, and I will help you sort it out gently."
+    return "OpenRouter is unavailable right now. Please check AI diagnostics for the exact error."
+
+
+def _chat_debug_payload(error: Optional[Exception], started_at: datetime):
+    return {
+        "status": "error",
+        "message": "OpenRouter chat failed. Check backend logs or AI diagnostics.",
+        "provider": "openrouter",
+        "used_fallback": False,
+        "fallback_triggered": False,
+        "fallback_reason": str(error) if error else "openrouter_unavailable",
+        "models_tried": _openrouter_model_candidates(),
+        "elapsed_ms": int((datetime.utcnow() - started_at).total_seconds() * 1000),
+    }
 
 
 def _safe_delete_sql(db: Session, sql: str, params: dict, label: str):
@@ -1952,23 +1993,13 @@ def chat_proxy(body: ChatBody, request: Request, db: Session = Depends(get_db)):
     for attempt in range(2):
         run_started = datetime.utcnow()
         try:
-            model, response = _openrouter_chat_completion(messages)
+            result = _openrouter_chat_completion(messages)
             elapsed_ms = int((datetime.utcnow() - run_started).total_seconds() * 1000)
             print(
-                f"[chat.proxy] attempt={attempt + 1} model={model} responseTimeMs={elapsed_ms} status={response.status_code}"
+                f"[chat.proxy] attempt={attempt + 1} model={result['model']} "
+                f"responseTimeMs={elapsed_ms} status={result['status_code']}"
             )
-            if response.status_code < 200 or response.status_code >= 300:
-                raise RuntimeError(f"openrouter_http_{response.status_code}")
-            decoded = response.json() if response.content else {}
-            choices = decoded.get("choices") if isinstance(decoded, dict) else None
-            content = ""
-            if isinstance(choices, list) and choices:
-                first = choices[0] if isinstance(choices[0], dict) else {}
-                msg = first.get("message") if isinstance(first, dict) else {}
-                if isinstance(msg, dict):
-                    content = str(msg.get("content") or "").strip()
-            if not content:
-                raise RuntimeError("openrouter_empty_response")
+            content = str(result["content"]).strip()
             total_ms = int((datetime.utcnow() - started_at).total_seconds() * 1000)
             print(f"[chat.proxy] final response delivered user_id={user.id} totalMs={total_ms}")
             return {
@@ -1976,28 +2007,25 @@ def chat_proxy(body: ChatBody, request: Request, db: Session = Depends(get_db)):
                 "reply": content,
                 "used_fallback": False,
                 "provider": "openrouter",
-                "model": model,
+                "model": result["model"],
+                "response_time_ms": result["elapsed_ms"],
             }
         except Exception as exc:
             last_error = exc
             elapsed_ms = int((datetime.utcnow() - run_started).total_seconds() * 1000)
-            print(f"[chat.proxy] ERROR DETAILS attempt={attempt + 1} afterMs={elapsed_ms} reason={exc}")
+            print(
+                f"[chat.proxy] ERROR DETAILS attempt={attempt + 1} afterMs={elapsed_ms} "
+                f"reason={exc} stack={traceback.format_exc()}"
+            )
             if attempt == 0:
                 continue
 
     total_ms = int((datetime.utcnow() - started_at).total_seconds() * 1000)
-    fallback_reply = _fallback_chat_reply(message)
     print(
-        f"[chat.proxy] FALLBACK TRIGGERED user_id={user.id} totalMs={total_ms} "
+        f"[chat.proxy] OPENROUTER FINAL FAILURE user_id={user.id} totalMs={total_ms} "
         f"reason={last_error}"
     )
-    return {
-        "status": "ok",
-        "reply": fallback_reply,
-        "used_fallback": True,
-        "provider": "fallback",
-        "fallback_reason": str(last_error) if last_error else "openrouter_unavailable",
-    }
+    return JSONResponse(_chat_debug_payload(last_error, started_at), status_code=503)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -5041,6 +5069,9 @@ def test_openrouter_connectivity(request: Request, db: Session = Depends(get_db)
             "reachable": False,
             "model": model_hint,
             "candidate_count": len(_openrouter_model_candidates()),
+            "key_loaded": False,
+            "key_length": 0,
+            "request_url": OPENROUTER_CHAT_URL,
             "message": "OPENROUTER_API_KEY is missing from the backend environment.",
         }
 
@@ -5057,29 +5088,26 @@ def test_openrouter_connectivity(request: Request, db: Session = Depends(get_db)
                 "content": "Connectivity test.",
             },
         ]
-        model, response = _openrouter_chat_completion(test_messages, timeout_seconds=12)
+        result = _openrouter_chat_completion(test_messages, timeout_seconds=12)
         elapsed_ms = int((datetime.utcnow() - started_at).total_seconds() * 1000)
-        decoded = response.json() if response.content else {}
-        choices = decoded.get("choices") if isinstance(decoded, dict) else None
-        content = ""
-        if isinstance(choices, list) and choices:
-            first = choices[0] if isinstance(choices[0], dict) else {}
-            message = first.get("message") if isinstance(first, dict) else {}
-            if isinstance(message, dict):
-                content = str(message.get("content") or "").strip()
+        content = str(result["content"]).strip()
         reachable = bool(content)
         print(
-            f"[OpenRouter.test] RESPONSE STATUS={response.status_code} RESPONSE TIME={elapsed_ms}ms "
-            f"MODEL USED={model} reachable={reachable}"
+            f"[OpenRouter.test] RESPONSE STATUS={result['status_code']} RESPONSE TIME={elapsed_ms}ms "
+            f"MODEL USED={result['model']} reachable={reachable}"
         )
         return {
             "status": "ok",
             "enabled": True,
             "reachable": reachable,
-            "model": model,
+            "model": result["model"],
             "candidate_count": len(_openrouter_model_candidates()),
+            "key_loaded": True,
+            "key_length": len(key),
+            "request_url": OPENROUTER_CHAT_URL,
             "response_time_ms": elapsed_ms,
             "reply": content[:80],
+            "raw_response": result["raw_response"],
             "message": "OpenRouter responded successfully." if reachable else "OpenRouter returned an empty response.",
         }
     except Exception as exc:
@@ -5091,7 +5119,11 @@ def test_openrouter_connectivity(request: Request, db: Session = Depends(get_db)
             "reachable": False,
             "model": model_hint,
             "candidate_count": len(_openrouter_model_candidates()),
+            "key_loaded": True,
+            "key_length": len(key),
+            "request_url": OPENROUTER_CHAT_URL,
             "response_time_ms": elapsed_ms,
             "error": str(exc),
+            "stack": traceback.format_exc()[:2000],
             "message": "OpenRouter connectivity test failed.",
         }
