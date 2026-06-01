@@ -57,8 +57,8 @@ OPENROUTER_FALLBACK_MODELS = [
     "google/gemini-2.0-flash-exp:free",
     "meta-llama/llama-3.3-70b-instruct:free",
 ]
-OPENROUTER_TIMEOUT_SECONDS = 10
-OPENROUTER_CONNECT_TIMEOUT_SECONDS = 4
+OPENROUTER_TIMEOUT_SECONDS = 25
+OPENROUTER_CONNECT_TIMEOUT_SECONDS = 5
 OPENROUTER_SESSION = requests.Session()
 
 
@@ -123,7 +123,7 @@ def _ensure_season_one_seed_guard(db: Session):
 
 def _log_openrouter_startup_status():
     key = os.getenv("OPENROUTER_API_KEY", "").strip()
-    model = os.getenv("OPENROUTER_MODEL", "").strip() or OPENROUTER_DEFAULT_MODEL
+    model = OPENROUTER_DEFAULT_MODEL
     if key:
         print(
             f"[OpenRouter] ✅ API enabled model={model} "
@@ -1051,7 +1051,7 @@ def _refresh_generated_posts(lang: str):
                     "X-OpenRouter-Title": "Ahira",
                 },
                 json=request_body,
-                timeout=(OPENROUTER_CONNECT_TIMEOUT_SECONDS, 25),
+                timeout=(OPENROUTER_CONNECT_TIMEOUT_SECONDS, OPENROUTER_TIMEOUT_SECONDS),
             )
             elapsed_ms = int((datetime.utcnow() - started_at).total_seconds() * 1000)
             print(f"[OpenRouter.fun] RESPONSE STATUS={r.status_code} RESPONSE TIME={elapsed_ms}ms model={model}")
@@ -1383,80 +1383,90 @@ def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = OPE
         if not model or model in seen:
             continue
         seen.add(model)
-        try:
+        request_body = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.72,
+            "max_tokens": 320,
+        }
+        for attempt in range(2):
             started_at = datetime.utcnow()
-            request_body = {
-                "model": model,
-                "messages": messages,
-                "temperature": 0.72,
-                "max_tokens": 320,
-            }
-            print(
-                f"[OpenRouter] OPENROUTER REQUEST START MODEL USED={model} messages={len(messages)} "
-                f"bodyChars={len(json.dumps(request_body, ensure_ascii=False))}"
-            )
-            print(f"[OpenRouter] REQUEST BODY model={model} payload={json.dumps(request_body, ensure_ascii=False)[:400]}")
-            response = OPENROUTER_SESSION.post(
-                OPENROUTER_CHAT_URL,
-                headers={
-                    "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": os.getenv("APP_PUBLIC_URL", "https://ahira.app"),
-                    "X-Title": "Ahira",
-                    "X-OpenRouter-Title": "Ahira",
-                },
-                json=request_body,
-                timeout=(OPENROUTER_CONNECT_TIMEOUT_SECONDS, min(timeout_seconds, 25)),
-            )
-            elapsed_ms = int((datetime.utcnow() - started_at).total_seconds() * 1000)
-            print(f"[OpenRouter] RESPONSE STATUS={response.status_code} RESPONSE TIME={elapsed_ms}ms MODEL USED={model}")
-            if response.status_code < 200 or response.status_code >= 300:
-                body = (response.text or "")[:240]
-                last_error = RuntimeError(f"openrouter_http_{response.status_code}")
+            try:
                 print(
-                    f"[OpenRouter] ERROR DETAILS model={model} failed status={response.status_code} "
-                    f"afterMs={int((datetime.utcnow() - started_at).total_seconds() * 1000)} "
-                    f"body={body}"
+                    f"[OpenRouter] OPENROUTER REQUEST START MODEL USED={model} attempt={attempt + 1} "
+                    f"messages={len(messages)} bodyChars={len(json.dumps(request_body, ensure_ascii=False))}"
                 )
-                continue
-            decoded = response.json() if response.content else {}
-            choices = decoded.get("choices") if isinstance(decoded, dict) else None
-            content = ""
-            if isinstance(choices, list) and choices:
-                first = choices[0] if isinstance(choices[0], dict) else {}
-                message = first.get("message") if isinstance(first, dict) else {}
-                if isinstance(message, dict):
-                    raw = message.get("content")
-                    if isinstance(raw, str):
-                        content = raw.strip()
-                    elif isinstance(raw, list):
-                        parts = []
-                        for part in raw:
-                            if isinstance(part, dict):
-                                text = str(part.get("text") or "").strip()
-                                if text:
-                                    parts.append(text)
-                            elif isinstance(part, str) and part.strip():
-                                parts.append(part.strip())
-                        content = "\n".join(parts).strip()
-            if not content:
-                last_error = RuntimeError("openrouter_empty_response")
                 print(
-                    f"[OpenRouter] ERROR DETAILS model={model} empty_response "
-                    f"afterMs={int((datetime.utcnow() - started_at).total_seconds() * 1000)}"
+                    f"[OpenRouter] REQUEST BODY model={model} payload={json.dumps(request_body, ensure_ascii=False)[:400]}"
                 )
-                continue
-            usage = decoded.get("usage") if isinstance(decoded, dict) else None
-            print(
-                f"[OpenRouter] model={model} success "
-                f"afterMs={int((datetime.utcnow() - started_at).total_seconds() * 1000)} "
-                f"usage={usage}"
-            )
-            return model, response
-        except Exception as exc:
-            last_error = exc
-            print(f"[OpenRouter] ERROR DETAILS model={model} error={exc}")
-            continue
+                response = OPENROUTER_SESSION.post(
+                    OPENROUTER_CHAT_URL,
+                    headers={
+                        "Authorization": f"Bearer {key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": os.getenv("APP_PUBLIC_URL", "https://ahira.app"),
+                        "X-Title": "Ahira",
+                        "X-OpenRouter-Title": "Ahira",
+                    },
+                    json=request_body,
+                    timeout=(OPENROUTER_CONNECT_TIMEOUT_SECONDS, min(timeout_seconds, OPENROUTER_TIMEOUT_SECONDS)),
+                )
+                elapsed_ms = int((datetime.utcnow() - started_at).total_seconds() * 1000)
+                print(
+                    f"[OpenRouter] RESPONSE STATUS={response.status_code} RESPONSE TIME={elapsed_ms}ms MODEL USED={model}"
+                )
+                if response.status_code < 200 or response.status_code >= 300:
+                    body = (response.text or "")[:240]
+                    last_error = RuntimeError(f"openrouter_http_{response.status_code}")
+                    print(
+                        f"[OpenRouter] ERROR DETAILS model={model} failed status={response.status_code} "
+                        f"afterMs={elapsed_ms} body={body}"
+                    )
+                    if attempt == 0 and response.status_code >= 500:
+                        print(f"[OpenRouter] retry triggered model={model} reason=http_{response.status_code}")
+                        continue
+                    break
+                decoded = response.json() if response.content else {}
+                print(
+                    f"[OpenRouter] RAW RESPONSE model={model} payload={json.dumps(decoded, ensure_ascii=False)[:500]}"
+                )
+                choices = decoded.get("choices") if isinstance(decoded, dict) else None
+                content = ""
+                if isinstance(choices, list) and choices:
+                    first = choices[0] if isinstance(choices[0], dict) else {}
+                    message = first.get("message") if isinstance(first, dict) else {}
+                    if isinstance(message, dict):
+                        raw = message.get("content")
+                        if isinstance(raw, str):
+                            content = raw.strip()
+                        elif isinstance(raw, list):
+                            parts = []
+                            for part in raw:
+                                if isinstance(part, dict):
+                                    text = str(part.get("text") or "").strip()
+                                    if text:
+                                        parts.append(text)
+                                elif isinstance(part, str) and part.strip():
+                                    parts.append(part.strip())
+                            content = "\n".join(parts).strip()
+                if not content:
+                    last_error = RuntimeError("openrouter_empty_response")
+                    print(
+                        f"[OpenRouter] ERROR DETAILS model={model} empty_response afterMs={elapsed_ms}"
+                    )
+                    break
+                usage = decoded.get("usage") if isinstance(decoded, dict) else None
+                print(
+                    f"[OpenRouter] model={model} success afterMs={elapsed_ms} usage={usage}"
+                )
+                return model, response
+            except Exception as exc:
+                last_error = exc
+                print(f"[OpenRouter] ERROR DETAILS model={model} attempt={attempt + 1} error={exc}")
+                if attempt == 0:
+                    print(f"[OpenRouter] retry triggered model={model} reason={exc}")
+                    continue
+                break
 
     raise RuntimeError(f"openrouter_request_failed: {last_error}")
 
