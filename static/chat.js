@@ -856,9 +856,9 @@ function renderHomeGroceryCard(){
 }
 
 /* ─── CHAT ──────────────────────────────────────────────── */
-const OPENROUTER_KEY="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";
+const OPENROUTER_KEY="";
 const OPENROUTER_URL="https://openrouter.ai/api/v1/chat/completions";
-const CHAT_MODELS=["meta-llama/llama-3.1-8b-instruct:free","mistralai/mistral-7b-instruct:free","qwen/qwen3-4b:free","google/gemma-3n-e4b-it:free","openrouter/free"];
+const CHAT_MODELS=["z-ai/glm-4.5-air:free","openai/gpt-oss-20b:free","google/gemma-4-31b-it:free","openai/gpt-oss-120b:free"];
 
 /* Replace: let chatHistory=[]; */
 let chatHistory = [];
@@ -960,6 +960,7 @@ async function sendMessage() {
         headers: {
             "Authorization":      "Bearer " + OPENROUTER_KEY,
             "HTTP-Referer":       "https://ahira.app",
+            "X-Title": "Ahira",
             "X-OpenRouter-Title": "Ahira",
             "Content-Type":       "application/json"
         },
