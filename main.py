@@ -52,14 +52,24 @@ RECOVERY_MAX_FAILED_ATTEMPTS = 5
 RECOVERY_LOCK_MINUTES = 15
 RECOVERY_TOKEN_TTL_MINUTES = 10
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_PRIMARY_MODEL = "openai/gpt-4o-mini"
+OPENROUTER_PRIMARY_MODEL = "z-ai/glm-4.5-air:free"
 OPENROUTER_DEFAULT_MODEL = OPENROUTER_PRIMARY_MODEL
 OPENROUTER_FALLBACK_MODELS = [
-    "qwen/qwen-2.5-7b-instruct",
+    "openai/gpt-oss-20b:free",
+    "google/gemma-4-31b-it:free",
+    "openai/gpt-oss-120b:free",
 ]
 OPENROUTER_TIMEOUT_SECONDS = 25
 OPENROUTER_CONNECT_TIMEOUT_SECONDS = 5
 OPENROUTER_SESSION = requests.Session()
+OPENROUTER_LAST_STATUS = {
+    "current_model": OPENROUTER_DEFAULT_MODEL,
+    "last_successful_model": None,
+    "last_response_time_ms": None,
+    "last_provider_error": None,
+    "failover_history": [],
+    "status": "not_tested",
+}
 
 
 # ── Startup ───────────────────────────────────────────────────
@@ -150,6 +160,39 @@ def _openrouter_model_candidates() -> list[str]:
         seen.add(model)
         ordered.append(model)
     return ordered
+
+
+def _set_openrouter_status(
+    *,
+    status: str,
+    current_model: Optional[str] = None,
+    last_successful_model: Optional[str] = None,
+    last_response_time_ms: Optional[int] = None,
+    last_provider_error: Optional[str] = None,
+    failover_history: Optional[list[dict]] = None,
+):
+    OPENROUTER_LAST_STATUS.update(
+        {
+            "status": status,
+            "current_model": current_model or OPENROUTER_LAST_STATUS.get("current_model"),
+            "last_successful_model": last_successful_model,
+            "last_response_time_ms": last_response_time_ms,
+            "last_provider_error": last_provider_error,
+            "failover_history": failover_history or [],
+        }
+    )
+
+
+def _openrouter_status_payload() -> dict:
+    return {
+        "current_model": OPENROUTER_LAST_STATUS.get("current_model") or OPENROUTER_DEFAULT_MODEL,
+        "last_successful_model": OPENROUTER_LAST_STATUS.get("last_successful_model"),
+        "last_response_time_ms": OPENROUTER_LAST_STATUS.get("last_response_time_ms"),
+        "last_provider_error": OPENROUTER_LAST_STATUS.get("last_provider_error"),
+        "failover_history": OPENROUTER_LAST_STATUS.get("failover_history") or [],
+        "status": OPENROUTER_LAST_STATUS.get("status") or "not_tested",
+        "models": _openrouter_model_candidates(),
+    }
 
 
 def _extract_openrouter_content(decoded: dict, model: str) -> str:
@@ -1396,8 +1439,15 @@ def _send_password_reset_email(email: str, token: str):
 
 def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = OPENROUTER_TIMEOUT_SECONDS):
     key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    failover_history = []
     if not key:
         print("[OpenRouter] ❌ OPENROUTER_API_KEY missing; chat request cannot be sent")
+        _set_openrouter_status(
+            status="missing_key",
+            current_model=OPENROUTER_DEFAULT_MODEL,
+            last_provider_error="openrouter_api_key_missing",
+            failover_history=failover_history,
+        )
         raise RuntimeError("openrouter_api_key_missing")
     print(
         f"[OpenRouter] API KEY FOUND model={OPENROUTER_DEFAULT_MODEL} "
@@ -1446,6 +1496,16 @@ def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = OPE
                 raw_text = response.text or ""
                 if response.status_code < 200 or response.status_code >= 300:
                     last_error = RuntimeError(f"openrouter_http_{response.status_code}")
+                    failover_history.append(
+                        {
+                            "model": model,
+                            "attempt": attempt + 1,
+                            "status_code": response.status_code,
+                            "response_time_ms": elapsed_ms,
+                            "success": False,
+                            "error": f"openrouter_http_{response.status_code}",
+                        }
+                    )
                     print(
                         f"[OpenRouter] ERROR DETAILS model={model} failed status={response.status_code} "
                         f"afterMs={elapsed_ms} body={raw_text[:1200]}"
@@ -1458,6 +1518,16 @@ def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = OPE
                     decoded = response.json() if response.content else {}
                 except Exception as exc:
                     last_error = RuntimeError(f"openrouter_json_parse_failed: {exc}")
+                    failover_history.append(
+                        {
+                            "model": model,
+                            "attempt": attempt + 1,
+                            "status_code": response.status_code,
+                            "response_time_ms": elapsed_ms,
+                            "success": False,
+                            "error": str(last_error),
+                        }
+                    )
                     print(
                         f"[OpenRouter] parsing error model={model} error={exc} raw={raw_text[:1200]}"
                     )
@@ -1469,13 +1539,41 @@ def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = OPE
                     content = _extract_openrouter_content(decoded if isinstance(decoded, dict) else {}, model)
                 except Exception as exc:
                     last_error = exc
+                    failover_history.append(
+                        {
+                            "model": model,
+                            "attempt": attempt + 1,
+                            "status_code": response.status_code,
+                            "response_time_ms": elapsed_ms,
+                            "success": False,
+                            "error": str(exc),
+                        }
+                    )
                     print(
                         f"[OpenRouter] parsing error model={model} error={exc} raw={raw_text[:1200]}"
                     )
                     break
                 usage = decoded.get("usage") if isinstance(decoded, dict) else None
+                failover_history.append(
+                    {
+                        "model": model,
+                        "attempt": attempt + 1,
+                        "status_code": response.status_code,
+                        "response_time_ms": elapsed_ms,
+                        "success": True,
+                        "error": None,
+                    }
+                )
                 print(
                     f"[OpenRouter] model={model} success afterMs={elapsed_ms} usage={usage}"
+                )
+                _set_openrouter_status(
+                    status="connected",
+                    current_model=model,
+                    last_successful_model=model,
+                    last_response_time_ms=elapsed_ms,
+                    last_provider_error=None,
+                    failover_history=failover_history,
                 )
                 return {
                     "model": model,
@@ -1484,9 +1582,21 @@ def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = OPE
                     "elapsed_ms": elapsed_ms,
                     "raw_response": raw_text[:4000],
                     "decoded": decoded,
+                    "failover_history": failover_history,
                 }
             except Exception as exc:
                 last_error = exc
+                elapsed_ms = int((datetime.utcnow() - started_at).total_seconds() * 1000)
+                failover_history.append(
+                    {
+                        "model": model,
+                        "attempt": attempt + 1,
+                        "status_code": None,
+                        "response_time_ms": elapsed_ms,
+                        "success": False,
+                        "error": str(exc),
+                    }
+                )
                 print(
                     f"[OpenRouter] ERROR DETAILS model={model} attempt={attempt + 1} error={exc} "
                     f"stack={traceback.format_exc()}"
@@ -1496,19 +1606,16 @@ def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = OPE
                     continue
                 break
 
-    raise RuntimeError(f"openrouter_request_failed: {last_error}")
+    _set_openrouter_status(
+        status="failed",
+        current_model=OPENROUTER_DEFAULT_MODEL,
+        last_provider_error=str(last_error) if last_error else "all_models_failed",
+        failover_history=failover_history,
+    )
+    raise RuntimeError(f"all_models_failed: {last_error}")
 
 
 def _fallback_chat_reply(message: str) -> str:
-    text = (message or "").strip().lower()
-    if not text:
-        return "OpenRouter is unavailable right now. Please check AI diagnostics for the exact error."
-    if any(word in text for word in ["sad", "down", "cry", "lonely", "alone", "anxious", "panic"]):
-        return "That sounds really heavy. Take one slow breath with me. Tell me the hardest part, and I will stay with you through it."
-    if any(word in text for word in ["remind", "reminder", "remember", "dont forget", "don't forget"]):
-        return "I can help with that. Tell me the task and the time, and I will help you plan it simply."
-    if any(word in text for word in ["plan", "schedule", "todo", "to do", "task"]):
-        return "Let us make it simple. Share the one most important task first, and I will help break it into small steps."
     return "OpenRouter is unavailable right now. Please check AI diagnostics for the exact error."
 
 
@@ -1517,10 +1624,12 @@ def _chat_debug_payload(error: Optional[Exception], started_at: datetime):
         "status": "error",
         "message": "OpenRouter chat failed. Check backend logs or AI diagnostics.",
         "provider": "openrouter",
+        "error": "all_models_failed",
         "used_fallback": False,
         "fallback_triggered": False,
         "fallback_reason": str(error) if error else "openrouter_unavailable",
         "models_tried": _openrouter_model_candidates(),
+        "openrouter": _openrouter_status_payload(),
         "elapsed_ms": int((datetime.utcnow() - started_at).total_seconds() * 1000),
     }
 
@@ -5049,6 +5158,7 @@ def health():
             "enabled": bool(openrouter_key),
             "model": OPENROUTER_DEFAULT_MODEL,
             "candidate_count": len(_openrouter_model_candidates()),
+            **_openrouter_status_payload(),
         },
     }
 
@@ -5069,6 +5179,8 @@ def test_openrouter_connectivity(request: Request, db: Session = Depends(get_db)
             "reachable": False,
             "model": model_hint,
             "candidate_count": len(_openrouter_model_candidates()),
+            "models": _openrouter_model_candidates(),
+            "openrouter": _openrouter_status_payload(),
             "key_loaded": False,
             "key_length": 0,
             "request_url": OPENROUTER_CHAT_URL,
@@ -5085,7 +5197,7 @@ def test_openrouter_connectivity(request: Request, db: Session = Depends(get_db)
             },
             {
                 "role": "user",
-                "content": "Connectivity test.",
+                "content": "hello",
             },
         ]
         result = _openrouter_chat_completion(test_messages, timeout_seconds=12)
@@ -5102,6 +5214,13 @@ def test_openrouter_connectivity(request: Request, db: Session = Depends(get_db)
             "reachable": reachable,
             "model": result["model"],
             "candidate_count": len(_openrouter_model_candidates()),
+            "models": _openrouter_model_candidates(),
+            "current_model": result["model"],
+            "last_successful_model": result["model"],
+            "last_response_time_ms": result["elapsed_ms"],
+            "last_provider_error": None,
+            "failover_history": result.get("failover_history") or [],
+            "openrouter": _openrouter_status_payload(),
             "key_loaded": True,
             "key_length": len(key),
             "request_url": OPENROUTER_CHAT_URL,
@@ -5119,6 +5238,13 @@ def test_openrouter_connectivity(request: Request, db: Session = Depends(get_db)
             "reachable": False,
             "model": model_hint,
             "candidate_count": len(_openrouter_model_candidates()),
+            "models": _openrouter_model_candidates(),
+            "current_model": OPENROUTER_DEFAULT_MODEL,
+            "last_successful_model": OPENROUTER_LAST_STATUS.get("last_successful_model"),
+            "last_response_time_ms": OPENROUTER_LAST_STATUS.get("last_response_time_ms"),
+            "last_provider_error": str(exc),
+            "failover_history": OPENROUTER_LAST_STATUS.get("failover_history") or [],
+            "openrouter": _openrouter_status_payload(),
             "key_loaded": True,
             "key_length": len(key),
             "request_url": OPENROUTER_CHAT_URL,
