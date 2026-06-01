@@ -51,7 +51,12 @@ RECOVERY_MAX_FAILED_ATTEMPTS = 5
 RECOVERY_LOCK_MINUTES = 15
 RECOVERY_TOKEN_TTL_MINUTES = 10
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_DEFAULT_MODEL = "google/gemma-3n-e4b-it:free"
+OPENROUTER_PRIMARY_MODEL = "openai/gpt-4o-mini"
+OPENROUTER_DEFAULT_MODEL = OPENROUTER_PRIMARY_MODEL
+OPENROUTER_FALLBACK_MODELS = [
+    "google/gemini-2.0-flash-exp:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+]
 OPENROUTER_TIMEOUT_SECONDS = 10
 OPENROUTER_CONNECT_TIMEOUT_SECONDS = 4
 OPENROUTER_SESSION = requests.Session()
@@ -120,12 +125,31 @@ def _log_openrouter_startup_status():
     key = os.getenv("OPENROUTER_API_KEY", "").strip()
     model = os.getenv("OPENROUTER_MODEL", "").strip() or OPENROUTER_DEFAULT_MODEL
     if key:
-        print(f"[OpenRouter] ✅ API enabled model={model}")
+        print(
+            f"[OpenRouter] ✅ API enabled model={model} "
+            f"candidateCount={len(_openrouter_model_candidates())}"
+        )
     else:
         print(
             f"[OpenRouter] ❌ OPENROUTER_API_KEY missing. "
             f"API disabled model={model}"
         )
+
+
+def _openrouter_model_candidates() -> list[str]:
+    candidates = [
+        OPENROUTER_PRIMARY_MODEL,
+        *OPENROUTER_FALLBACK_MODELS,
+    ]
+    seen = set()
+    ordered = []
+    for model in candidates:
+        model = (model or "").strip()
+        if not model or model in seen:
+            continue
+        seen.add(model)
+        ordered.append(model)
+    return ordered
 
 
 # ── Session helper ────────────────────────────────────────────
@@ -987,31 +1011,20 @@ def _refresh_generated_posts(lang: str):
     key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not key:
         return _fallback_generated_posts(lang)
-    print(f"[OpenRouter.fun] API KEY FOUND model={os.getenv('OPENROUTER_MODEL', '').strip() or OPENROUTER_DEFAULT_MODEL}")
+    print(
+        f"[OpenRouter.fun] API KEY FOUND model={OPENROUTER_DEFAULT_MODEL} "
+        f"candidateCount={len(_openrouter_model_candidates())}"
+    )
     prompt = (
         "Generate 6 short emotional community posts for Indian women users. "
         "Language mix based on lang input. Keep simple words, warm tone, under 100 chars. "
         "Return strict JSON array with fields content,category,mood,anonymous_identity."
     )
-    model_candidates = []
-    primary_model = os.getenv("OPENROUTER_MODEL", "").strip()
-    if primary_model:
-        model_candidates.append(primary_model)
-    model_candidates.extend(
-        [
-            "google/gemma-3n-e4b-it:free",
-            "google/gemma-3-27b-it:free",
-            "google/gemma-3-12b-it:free",
-            "mistralai/mistral-7b-instruct:free",
-            "meta-llama/llama-3.1-8b-instruct:free",
-            "qwen/qwen2.5-7b-instruct:free",
-        ]
-    )
 
     import json
 
     seen = set()
-    for model in model_candidates:
+    for model in _openrouter_model_candidates():
         model = (model or "").strip()
         if not model or model in seen:
             continue
@@ -1038,7 +1051,7 @@ def _refresh_generated_posts(lang: str):
                     "X-OpenRouter-Title": "Ahira",
                 },
                 json=request_body,
-                timeout=(OPENROUTER_CONNECT_TIMEOUT_SECONDS, 18),
+                timeout=(OPENROUTER_CONNECT_TIMEOUT_SECONDS, 25),
             )
             elapsed_ms = int((datetime.utcnow() - started_at).total_seconds() * 1000)
             print(f"[OpenRouter.fun] RESPONSE STATUS={r.status_code} RESPONSE TIME={elapsed_ms}ms model={model}")
@@ -1359,27 +1372,13 @@ def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = OPE
         print("[OpenRouter] ❌ OPENROUTER_API_KEY missing; chat request cannot be sent")
         raise RuntimeError("openrouter_api_key_missing")
     print(
-        f"[OpenRouter] API KEY FOUND model={os.getenv('OPENROUTER_MODEL', '').strip() or OPENROUTER_DEFAULT_MODEL}"
-    )
-
-    model_candidates = []
-    primary_model = os.getenv("OPENROUTER_MODEL", "").strip()
-    if primary_model:
-        model_candidates.append(primary_model)
-    model_candidates.extend(
-        [
-            OPENROUTER_DEFAULT_MODEL,
-            "mistralai/mistral-7b-instruct:free",
-            "meta-llama/llama-3.1-8b-instruct:free",
-            "qwen/qwen2.5-7b-instruct:free",
-            "google/gemma-3-12b-it:free",
-            "google/gemma-3-27b-it:free",
-        ]
+        f"[OpenRouter] API KEY FOUND model={OPENROUTER_DEFAULT_MODEL} "
+        f"candidateCount={len(_openrouter_model_candidates())}"
     )
 
     seen = set()
     last_error = None
-    for model in model_candidates:
+    for model in _openrouter_model_candidates():
         model = (model or "").strip()
         if not model or model in seen:
             continue
@@ -1407,7 +1406,7 @@ def _openrouter_chat_completion(messages: list[dict], timeout_seconds: int = OPE
                     "X-OpenRouter-Title": "Ahira",
                 },
                 json=request_body,
-                timeout=(OPENROUTER_CONNECT_TIMEOUT_SECONDS, timeout_seconds),
+                timeout=(OPENROUTER_CONNECT_TIMEOUT_SECONDS, min(timeout_seconds, 25)),
             )
             elapsed_ms = int((datetime.utcnow() - started_at).total_seconds() * 1000)
             print(f"[OpenRouter] RESPONSE STATUS={response.status_code} RESPONSE TIME={elapsed_ms}ms MODEL USED={model}")
@@ -1881,8 +1880,9 @@ def reset_password_with_emojis(body: RecoveryEmojiResetBody, db: Session = Depen
         db.commit()
         print(f"[Recovery] PASSWORD RESET SUCCESS user_id={user.id}")
 
-        token = crud.create_session(db, user.id)
-        resp = JSONResponse(_session_response_payload(db, user))
+        fresh_user = db.query(User).filter(User.id == user.id).first() or user
+        token = crud.create_session(db, fresh_user.id)
+        resp = JSONResponse(_session_response_payload(db, fresh_user))
         resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=SESSION_MAX_DAYS * 24 * 3600)
         return resp
     except Exception as exc:
@@ -5009,7 +5009,8 @@ def health():
         "services": {"postgresql": True, "mongodb": True},
         "openrouter": {
             "enabled": bool(openrouter_key),
-            "model": os.getenv("OPENROUTER_MODEL", "").strip() or OPENROUTER_DEFAULT_MODEL,
+            "model": OPENROUTER_DEFAULT_MODEL,
+            "candidate_count": len(_openrouter_model_candidates()),
         },
     }
 
@@ -5020,7 +5021,7 @@ def test_openrouter_connectivity(request: Request, db: Session = Depends(get_db)
     if not user:
         return JSONResponse({"status": "error", "message": "Please log in."}, status_code=401)
 
-    model_hint = os.getenv("OPENROUTER_MODEL", "").strip() or OPENROUTER_DEFAULT_MODEL
+    model_hint = OPENROUTER_DEFAULT_MODEL
     key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not key:
         print(f"[OpenRouter.test] API KEY MISSING user_id={user.id} model={model_hint}")
@@ -5029,6 +5030,7 @@ def test_openrouter_connectivity(request: Request, db: Session = Depends(get_db)
             "enabled": False,
             "reachable": False,
             "model": model_hint,
+            "candidate_count": len(_openrouter_model_candidates()),
             "message": "OPENROUTER_API_KEY is missing from the backend environment.",
         }
 
@@ -5065,6 +5067,7 @@ def test_openrouter_connectivity(request: Request, db: Session = Depends(get_db)
             "enabled": True,
             "reachable": reachable,
             "model": model,
+            "candidate_count": len(_openrouter_model_candidates()),
             "response_time_ms": elapsed_ms,
             "reply": content[:80],
             "message": "OpenRouter responded successfully." if reachable else "OpenRouter returned an empty response.",
@@ -5077,6 +5080,7 @@ def test_openrouter_connectivity(request: Request, db: Session = Depends(get_db)
             "enabled": True,
             "reachable": False,
             "model": model_hint,
+            "candidate_count": len(_openrouter_model_candidates()),
             "response_time_ms": elapsed_ms,
             "error": str(exc),
             "message": "OpenRouter connectivity test failed.",
