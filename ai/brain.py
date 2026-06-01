@@ -20,10 +20,10 @@ OPENROUTER_URL     = "https://openrouter.ai/api/v1/chat/completions"
 
 # Free & reliable models on OpenRouter — try in order until one works
 MODELS = [
-    "mistralai/mistral-7b-instruct:free",
-    "meta-llama/llama-3-8b-instruct:free",
-    "google/gemma-2-9b-it:free",
-    "openchat/openchat-7b:free",
+    "z-ai/glm-4.5-air:free",
+    "openai/gpt-oss-20b:free",
+    "google/gemma-4-31b-it:free",
+    "openai/gpt-oss-120b:free",
 ]
 
 
