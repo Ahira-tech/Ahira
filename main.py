@@ -362,11 +362,13 @@ class RecoveryEmojiSetupBody(BaseModel):
 
 class RecoveryEmojiVerifyBody(BaseModel):
     email: str
-    emoji_sequence: list[str]
+    emoji_sequence: Optional[list[str]] = None
+    emojis: Optional[list[str]] = None
 
 
 class RecoveryEmojiResetBody(BaseModel):
-    temporary_reset_token: str
+    temporary_reset_token: Optional[str] = None
+    reset_token: Optional[str] = None
     new_password: str
 
 
@@ -1230,6 +1232,14 @@ def _normalize_emoji_sequence(values: list[str]) -> list[str]:
     return [_normalize_emoji_value(value) for value in values]
 
 
+def _emoji_sequence_preview(sequence: list[str]) -> str:
+    return " • ".join(_normalize_emoji_sequence(sequence))
+
+
+def _emoji_sequence_exact_payload(sequence: list[str]) -> str:
+    return "".join(_normalize_emoji_sequence(sequence))
+
+
 def _validate_emoji_sequence(values: list[str]) -> tuple[bool, str, list[str]]:
     if not isinstance(values, list):
         return False, "Emoji sequence is required.", []
@@ -1243,7 +1253,7 @@ def _validate_emoji_sequence(values: list[str]) -> tuple[bool, str, list[str]]:
 
 def _emoji_sequence_payload(sequence: list[str]) -> str:
     normalized = _normalize_emoji_sequence(sequence)
-    return "|".join(normalized)
+    return _emoji_sequence_exact_payload(normalized)
 
 
 def _legacy_emoji_sequence_payload(sequence: list[str]) -> str:
@@ -1253,7 +1263,7 @@ def _legacy_emoji_sequence_payload(sequence: list[str]) -> str:
 def _hash_emoji_sequence(sequence: list[str], salt: Optional[bytes] = None) -> str:
     normalized = _normalize_emoji_sequence(sequence)
     salt_bytes = salt or secrets.token_bytes(16)
-    payload = _emoji_sequence_payload(normalized).encode("utf-8")
+    payload = _emoji_sequence_exact_payload(normalized).encode("utf-8")
     derived = hashlib.pbkdf2_hmac("sha256", payload, salt_bytes, 210000)
     return "pbkdf2_sha256$210000${}${}".format(
         salt_bytes.hex(),
@@ -1274,6 +1284,7 @@ def _verify_emoji_hash(sequence: list[str], stored_hash: str) -> bool:
 
     normalized = _normalize_emoji_sequence(sequence)
     payloads = [
+        _emoji_sequence_exact_payload(normalized).encode("utf-8"),
         _emoji_sequence_payload(normalized).encode("utf-8"),
         _legacy_emoji_sequence_payload(normalized).encode("utf-8"),
     ]
@@ -1291,6 +1302,22 @@ def _recovery_emojis_enabled(db: Session, user_id: int) -> bool:
 
 def _recovery_reset_token_hash(token: str) -> str:
     return _sha256_text(token)
+
+
+def _recovery_emoji_sequence_from_body(body) -> list[str]:
+    sequence = getattr(body, "emoji_sequence", None)
+    if sequence is None:
+        sequence = getattr(body, "emojis", None)
+    if isinstance(sequence, list):
+        return sequence
+    if isinstance(sequence, tuple):
+        return list(sequence)
+    return []
+
+
+def _recovery_reset_token_from_body(body) -> str:
+    token = getattr(body, "reset_token", None) or getattr(body, "temporary_reset_token", None)
+    return (token or "").strip()
 
 
 def _issue_temporary_reset_token(db: Session, user_id: int) -> str:
@@ -1852,8 +1879,11 @@ def setup_recovery_emojis(body: RecoveryEmojiSetupBody, request: Request, db: Se
 
     hint = (body.recovery_hint or "").strip() or None
     emoji_hash = _hash_emoji_sequence(sequence)
+    emoji_preview = _emoji_sequence_preview(sequence)
     now = datetime.utcnow()
     if existing:
+        existing.emoji_sequence_hash = emoji_hash
+        existing.emoji_sequence_preview = emoji_preview
         existing.emoji_hash = emoji_hash
         existing.recovery_hint = hint
         existing.failed_attempts = 0
@@ -1862,6 +1892,8 @@ def setup_recovery_emojis(body: RecoveryEmojiSetupBody, request: Request, db: Se
     else:
         existing = UserRecoveryEmoji(
             user_id=user.id,
+            emoji_sequence_hash=emoji_hash,
+            emoji_sequence_preview=emoji_preview,
             emoji_hash=emoji_hash,
             recovery_hint=hint,
             failed_attempts=0,
@@ -1916,38 +1948,84 @@ def verify_recovery_emojis(body: RecoveryEmojiVerifyBody, db: Session = Depends(
     print("[Recovery] RECOVERY VERIFY START")
     try:
         email = (body.email or "").strip().lower()
+        print(f"[Recovery] REQUEST START email={email or '<missing>'}")
         if not email:
-            return JSONResponse({"status": "error", "message": "Email is required."}, status_code=400)
+            print("[Recovery] REQUEST FAILED reason=email_missing")
+            return JSONResponse(
+                {"success": False, "status": "error", "message": "Email is required."},
+                status_code=400,
+            )
 
-        ok, message, sequence = _validate_emoji_sequence(body.emoji_sequence)
+        raw_sequence = _recovery_emoji_sequence_from_body(body)
+        ok, message, sequence = _validate_emoji_sequence(raw_sequence)
         if not ok:
-            return JSONResponse({"status": "error", "message": message}, status_code=400)
+            print(
+                "[Recovery] REQUEST FAILED reason=invalid_sequence "
+                f"received_count={len(raw_sequence) if isinstance(raw_sequence, list) else 0}"
+            )
+            return JSONResponse(
+                {"success": False, "status": "error", "message": message},
+                status_code=400,
+            )
         print(f"[Recovery] EMOJI SEQUENCE RECEIVED email={email} count={len(sequence)}")
         print(f"[Recovery] NORMALIZED SEQUENCE value={_emoji_sequence_payload(sequence)}")
 
         user = crud.get_user_by_email(db, email)
         print(f"[Recovery] USER FOUND found={bool(user)} email={email}")
         if not user:
-            return JSONResponse({"status": "error", "message": "Incorrect emoji sequence."}, status_code=401)
+            print("[Recovery] REQUEST FAILED reason=user_not_found")
+            return JSONResponse(
+                {
+                    "success": False,
+                    "status": "error",
+                    "message": "Incorrect recovery emojis",
+                },
+                status_code=401,
+            )
 
         recovery = db.query(UserRecoveryEmoji).filter(UserRecoveryEmoji.user_id == user.id).first()
+        print(f"[Recovery] RECOVERY ROW FOUND found={bool(recovery)} user_id={user.id}")
         if not recovery:
-            return JSONResponse({"status": "error", "message": "Recovery emojis not set up yet."}, status_code=404)
+            print("[Recovery] REQUEST FAILED reason=recovery_not_configured")
+            return JSONResponse(
+                {
+                    "success": False,
+                    "status": "error",
+                    "message": "Recovery emojis not set up yet.",
+                },
+                status_code=404,
+            )
 
         now = datetime.utcnow()
         if recovery.locked_until and recovery.locked_until > now:
             remaining = max(1, int((recovery.locked_until - now).total_seconds() // 60) + 1)
+            print(
+                "[Recovery] LOCK STATUS locked=True "
+                f"email={email} locked_until={recovery.locked_until.isoformat()} remaining_minutes={remaining}"
+            )
             return JSONResponse(
                 {
+                    "success": False,
                     "status": "error",
                     "message": f"Recovery temporarily locked. Try again in about {remaining} minute(s).",
                     "locked_until": recovery.locked_until.isoformat(),
                 },
                 status_code=429,
             )
+        print(
+            "[Recovery] LOCK STATUS locked=False "
+            f"email={email} failed_attempts={int(recovery.failed_attempts or 0)}"
+        )
 
         print("[Recovery] HASH CHECK START")
-        hash_ok = _verify_emoji_hash(sequence, recovery.emoji_hash)
+        stored_hash = (recovery.emoji_sequence_hash or recovery.emoji_hash or "").strip()
+        print(
+            "[Recovery] STORED HASH READY "
+            f"has_new_hash={bool((recovery.emoji_sequence_hash or '').strip())} "
+            f"has_legacy_hash={bool((recovery.emoji_hash or '').strip())} "
+            f"preview={recovery.emoji_sequence_preview or ''}"
+        )
+        hash_ok = _verify_emoji_hash(sequence, stored_hash)
         print(f"[Recovery] HASH CHECK RESULT matched={hash_ok}")
         if hash_ok:
             recovery.failed_attempts = 0
@@ -1955,11 +2033,18 @@ def verify_recovery_emojis(body: RecoveryEmojiVerifyBody, db: Session = Depends(
             recovery.updated_at = now
             temp_token = _issue_temporary_reset_token(db, user.id)
             db.commit()
-            print("[Recovery] RESET TOKEN GENERATED")
+            print(
+                "[Recovery] REQUEST SUCCESS token_created=True "
+                f"email={email} expires_in_seconds={RECOVERY_TOKEN_TTL_MINUTES * 60}"
+            )
             return {
+                "success": True,
                 "status": "ok",
                 "verified": True,
+                "reset_token": temp_token,
                 "temporary_reset_token": temp_token,
+                "expires_in": RECOVERY_TOKEN_TTL_MINUTES * 60,
+                "expires_in_seconds": RECOVERY_TOKEN_TTL_MINUTES * 60,
                 "expires_in_minutes": RECOVERY_TOKEN_TTL_MINUTES,
             }
 
@@ -1970,8 +2055,13 @@ def verify_recovery_emojis(body: RecoveryEmojiVerifyBody, db: Session = Depends(
         recovery.updated_at = now
         db.commit()
         if recovery.locked_until and recovery.locked_until > now:
+            print(
+                "[Recovery] REQUEST FAILED reason=locked_after_failed_attempts "
+                f"email={email} failed_attempts={recovery.failed_attempts}"
+            )
             return JSONResponse(
                 {
+                    "success": False,
                     "status": "error",
                     "message": "Recovery temporarily locked. Try again later.",
                     "failed_attempts": recovery.failed_attempts,
@@ -1979,10 +2069,15 @@ def verify_recovery_emojis(body: RecoveryEmojiVerifyBody, db: Session = Depends(
                 },
                 status_code=429,
             )
+        print(
+            "[Recovery] REQUEST FAILED reason=incorrect_sequence "
+            f"email={email} failed_attempts={recovery.failed_attempts}"
+        )
         return JSONResponse(
             {
+                "success": False,
                 "status": "error",
-                "message": "Incorrect emoji sequence.",
+                "message": "Incorrect recovery emojis",
                 "failed_attempts": recovery.failed_attempts,
             },
             status_code=401,
@@ -1990,8 +2085,13 @@ def verify_recovery_emojis(body: RecoveryEmojiVerifyBody, db: Session = Depends(
     except Exception as exc:
         db.rollback()
         print(f"[Recovery] verify error={exc}")
+        print(traceback.format_exc())
         return JSONResponse(
-            {"status": "error", "message": "Unable to verify recovery emojis right now."},
+            {
+                "success": False,
+                "status": "error",
+                "message": "Unable to verify recovery emojis right now.",
+            },
             status_code=500,
         )
 
@@ -2000,27 +2100,41 @@ def verify_recovery_emojis(body: RecoveryEmojiVerifyBody, db: Session = Depends(
 def reset_password_with_emojis(body: RecoveryEmojiResetBody, db: Session = Depends(get_db)):
     print("[Recovery] PASSWORD RESET START")
     try:
-        token = (body.temporary_reset_token or "").strip()
+        token = _recovery_reset_token_from_body(body)
         new_password = (body.new_password or "").strip()
+        print(f"[Recovery] RESET REQUEST START token_present={bool(token)} new_password_len={len(new_password)}")
         if not token or not new_password:
             return JSONResponse(
-                {"status": "error", "message": "Temporary reset token and new password are required."},
+                {
+                    "success": False,
+                    "status": "error",
+                    "message": "Temporary reset token and new password are required.",
+                },
                 status_code=400,
             )
         if len(new_password) < 6:
-            return JSONResponse({"status": "error", "message": "Password must be at least 6 characters."}, status_code=400)
+            return JSONResponse(
+                {
+                    "success": False,
+                    "status": "error",
+                    "message": "Password must be at least 6 characters.",
+                },
+                status_code=400,
+            )
 
         row = _find_valid_reset_token(db, token)
         if not row:
+            print("[Recovery] RESET REQUEST FAILED reason=invalid_or_expired_token")
             return JSONResponse(
-                {"status": "error", "message": "Expired token."},
+                {"success": False, "status": "error", "message": "Expired token."},
                 status_code=400,
             )
 
         user = db.query(User).filter(User.id == int(row["user_id"])).first()
         if not user:
+            print("[Recovery] RESET REQUEST FAILED reason=user_missing_for_token")
             return JSONResponse(
-                {"status": "error", "message": "Expired token."},
+                {"success": False, "status": "error", "message": "Expired token."},
                 status_code=400,
             )
 
@@ -2029,7 +2143,9 @@ def reset_password_with_emojis(body: RecoveryEmojiResetBody, db: Session = Depen
             text(
                 """
                 UPDATE users
-                SET password = :password, password_hash = :password_hash, updated_at = NOW()
+                SET password = :password,
+                    password_hash = :password_hash,
+                    updated_at = NOW()
                 WHERE id = :uid
                 """
             ),
@@ -2048,8 +2164,13 @@ def reset_password_with_emojis(body: RecoveryEmojiResetBody, db: Session = Depen
     except Exception as exc:
         db.rollback()
         print(f"[Recovery] password reset error={exc}")
+        print(traceback.format_exc())
         return JSONResponse(
-            {"status": "error", "message": "Unable to reset your password right now."},
+            {
+                "success": False,
+                "status": "error",
+                "message": "Unable to reset your password right now.",
+            },
             status_code=500,
         )
 
@@ -2992,7 +3113,9 @@ def run_feed_migrations(db: Session):
     CREATE TABLE IF NOT EXISTS user_recovery_emojis (
       id BIGSERIAL PRIMARY KEY,
       user_id BIGINT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-      emoji_hash TEXT NOT NULL,
+      emoji_sequence_hash TEXT NOT NULL,
+      emoji_sequence_preview TEXT,
+      emoji_hash TEXT,
       recovery_hint TEXT,
       failed_attempts INT NOT NULL DEFAULT 0,
       locked_until TIMESTAMPTZ,
@@ -3430,6 +3553,15 @@ def run_feed_migrations(db: Session):
     UPDATE users SET password_hash = password WHERE password_hash IS NULL;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '30 days');
     ALTER TABLE feed_user_posts ADD COLUMN IF NOT EXISTS client_post_id VARCHAR(120);
+    ALTER TABLE user_recovery_emojis ADD COLUMN IF NOT EXISTS emoji_sequence_hash TEXT;
+    ALTER TABLE user_recovery_emojis ADD COLUMN IF NOT EXISTS emoji_sequence_preview TEXT;
+    ALTER TABLE user_recovery_emojis ADD COLUMN IF NOT EXISTS emoji_hash TEXT;
+    UPDATE user_recovery_emojis
+      SET emoji_sequence_hash = COALESCE(emoji_sequence_hash, emoji_hash)
+      WHERE emoji_sequence_hash IS NULL;
+    UPDATE user_recovery_emojis
+      SET emoji_hash = COALESCE(emoji_hash, emoji_sequence_hash)
+      WHERE emoji_hash IS NULL;
     ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS preferred_language VARCHAR(10) NOT NULL DEFAULT 'en';
     ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS total_xp BIGINT NOT NULL DEFAULT 0;
