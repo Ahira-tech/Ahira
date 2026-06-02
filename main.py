@@ -1320,6 +1320,43 @@ def _recovery_reset_token_from_body(body) -> str:
     return (token or "").strip()
 
 
+def _ensure_recovery_emoji_schema(db: Session):
+    db.execute(
+        text(
+            """
+            ALTER TABLE user_recovery_emojis
+            ADD COLUMN IF NOT EXISTS emoji_sequence_hash TEXT
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            ALTER TABLE user_recovery_emojis
+            ADD COLUMN IF NOT EXISTS emoji_sequence_preview TEXT
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            ALTER TABLE user_recovery_emojis
+            ADD COLUMN IF NOT EXISTS emoji_hash TEXT
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            UPDATE user_recovery_emojis
+            SET emoji_sequence_hash = COALESCE(emoji_sequence_hash, emoji_hash),
+                emoji_hash = COALESCE(emoji_hash, emoji_sequence_hash)
+            WHERE emoji_sequence_hash IS NULL OR emoji_hash IS NULL
+            """
+        )
+    )
+
+
 def _issue_temporary_reset_token(db: Session, user_id: int) -> str:
     token = secrets.token_urlsafe(32)
     token_hash = _recovery_reset_token_hash(token)
@@ -1863,6 +1900,8 @@ def setup_recovery_emojis(body: RecoveryEmojiSetupBody, request: Request, db: Se
     if not user:
         return JSONResponse({"status": "error", "message": "Please log in."}, status_code=401)
 
+    _ensure_recovery_emoji_schema(db)
+
     ok, message, sequence = _validate_emoji_sequence(body.emoji_sequence)
     if not ok:
         return JSONResponse({"status": "error", "message": message}, status_code=400)
@@ -1947,6 +1986,7 @@ def reset_password(body: ResetPasswordBody, db: Session = Depends(get_db)):
 def verify_recovery_emojis(body: RecoveryEmojiVerifyBody, db: Session = Depends(get_db)):
     print("[Recovery] RECOVERY VERIFY START")
     try:
+        _ensure_recovery_emoji_schema(db)
         email = (body.email or "").strip().lower()
         print(f"[Recovery] REQUEST START email={email or '<missing>'}")
         if not email:
@@ -2100,6 +2140,7 @@ def verify_recovery_emojis(body: RecoveryEmojiVerifyBody, db: Session = Depends(
 def reset_password_with_emojis(body: RecoveryEmojiResetBody, db: Session = Depends(get_db)):
     print("[Recovery] PASSWORD RESET START")
     try:
+        _ensure_recovery_emoji_schema(db)
         token = _recovery_reset_token_from_body(body)
         new_password = (body.new_password or "").strip()
         print(f"[Recovery] RESET REQUEST START token_present={bool(token)} new_password_len={len(new_password)}")
