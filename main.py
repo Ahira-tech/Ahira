@@ -1299,6 +1299,14 @@ def _hash_recovery_key(sequence: list[str]) -> tuple[Optional[str], Optional[str
     return _sha256_text(recovery_key), recovery_key, normalized
 
 
+def _emoji_sequence_from_preview(preview: Optional[str]) -> list[str]:
+    raw = (preview or "").strip()
+    if not raw:
+        return []
+    parts = [part.strip() for part in raw.split(" • ")]
+    return [part for part in parts if part]
+
+
 def _validate_emoji_sequence(values: list[str]) -> tuple[bool, str, list[str]]:
     if not isinstance(values, list):
         return False, "Emoji sequence is required.", []
@@ -1316,50 +1324,6 @@ def _validate_emoji_sequence(values: list[str]) -> tuple[bool, str, list[str]]:
 def _emoji_sequence_payload(sequence: list[str]) -> str:
     normalized = _normalize_emoji_sequence(sequence)
     return _emoji_sequence_exact_payload(normalized)
-
-
-def _legacy_emoji_sequence_payload(sequence: list[str]) -> str:
-    return json.dumps(_normalize_emoji_sequence(sequence), ensure_ascii=False, separators=(",", ":"))
-
-
-def _legacy_pipe_emoji_sequence_payload(sequence: list[str]) -> str:
-    return "|".join(_normalize_emoji_sequence(sequence))
-
-
-def _hash_emoji_sequence(sequence: list[str], salt: Optional[bytes] = None) -> str:
-    normalized = _normalize_emoji_sequence(sequence)
-    salt_bytes = salt or secrets.token_bytes(16)
-    payload = _emoji_sequence_exact_payload(normalized).encode("utf-8")
-    derived = hashlib.pbkdf2_hmac("sha256", payload, salt_bytes, 210000)
-    return "pbkdf2_sha256$210000${}${}".format(
-        salt_bytes.hex(),
-        derived.hex(),
-    )
-
-
-def _verify_emoji_hash(sequence: list[str], stored_hash: str) -> bool:
-    try:
-        algorithm, iterations, salt_hex, digest_hex = stored_hash.split("$", 3)
-        if algorithm != "pbkdf2_sha256":
-            return False
-        rounds = int(iterations)
-        salt = bytes.fromhex(salt_hex)
-        expected = bytes.fromhex(digest_hex)
-    except Exception:
-        return False
-
-    normalized = _normalize_emoji_sequence(sequence)
-    payloads = [
-        _emoji_sequence_exact_payload(normalized).encode("utf-8"),
-        _emoji_sequence_payload(normalized).encode("utf-8"),
-        _legacy_pipe_emoji_sequence_payload(normalized).encode("utf-8"),
-        _legacy_emoji_sequence_payload(normalized).encode("utf-8"),
-    ]
-    for payload in payloads:
-        actual = hashlib.pbkdf2_hmac("sha256", payload, salt, rounds)
-        if hmac.compare_digest(actual, expected):
-            return True
-    return False
 
 
 def _verify_recovery_key_hash(sequence: list[str], stored_hash: str) -> tuple[bool, Optional[str], Optional[str]]:
@@ -1440,15 +1404,80 @@ def _ensure_recovery_emoji_schema(db: Session):
         text(
             """
             UPDATE user_recovery_emojis
-            SET emoji_sequence_hash = COALESCE(emoji_sequence_hash, emoji_hash),
-                emoji_hash = COALESCE(emoji_hash, emoji_sequence_hash)
+            SET emoji_sequence_hash = COALESCE(emoji_sequence_hash, emoji_hash, hashed_recovery_key),
+                emoji_hash = COALESCE(emoji_hash, emoji_sequence_hash, hashed_recovery_key)
             WHERE emoji_sequence_hash IS NULL OR emoji_hash IS NULL
+            """
+        )
+    )
+
+    rows = db.execute(
+        text(
+            """
+            SELECT id, hashed_recovery_key, emoji_sequence_preview, emoji_sequence_hash, emoji_hash
+            FROM user_recovery_emojis
+            WHERE hashed_recovery_key IS NULL
+            """
+        )
+    ).mappings().all()
+    for row in rows:
+        preview_sequence = _emoji_sequence_from_preview(row["emoji_sequence_preview"])
+        candidate_hash = None
+        if preview_sequence:
+            candidate_hash, _, _ = _hash_recovery_key(preview_sequence)
+        if not candidate_hash:
+            existing_fallback = (row["emoji_sequence_hash"] or row["emoji_hash"] or "").strip()
+            if existing_fallback:
+                candidate_hash = existing_fallback
+        if candidate_hash:
+            db.execute(
+                text(
+                    """
+                    UPDATE user_recovery_emojis
+                    SET hashed_recovery_key = :hash,
+                        updated_at = NOW()
+                    WHERE id = :id
+                    """
+                ),
+                {"id": int(row["id"]), "hash": candidate_hash},
+            )
+
+
+def _ensure_password_reset_token_schema(db: Session):
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+              id BIGSERIAL PRIMARY KEY,
+              user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              token_hash TEXT NOT NULL,
+              expires_at TIMESTAMPTZ NOT NULL,
+              used BOOLEAN NOT NULL DEFAULT FALSE,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user_created
+              ON password_reset_tokens (user_id, created_at DESC)
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_lookup
+              ON password_reset_tokens (user_id, token_hash, used, expires_at)
             """
         )
     )
 
 
 def _issue_temporary_reset_token(db: Session, user_id: int) -> str:
+    _ensure_password_reset_token_schema(db)
     token = secrets.token_urlsafe(32)
     token_hash = _recovery_reset_token_hash(token)
     expires_at = datetime.utcnow() + timedelta(minutes=RECOVERY_TOKEN_TTL_MINUTES)
@@ -1469,6 +1498,7 @@ def _issue_temporary_reset_token(db: Session, user_id: int) -> str:
 
 
 def _find_valid_reset_token(db: Session, token: str):
+    _ensure_password_reset_token_schema(db)
     token_hash = _recovery_reset_token_hash(token)
     return db.execute(
         text(
@@ -1487,6 +1517,7 @@ def _find_valid_reset_token(db: Session, token: str):
 
 
 def _finalize_reset_token(db: Session, token_id: int, user_id: int):
+    _ensure_password_reset_token_schema(db)
     db.execute(
         text(
             """
@@ -2023,15 +2054,14 @@ def setup_recovery_emojis(body: RecoveryEmojiSetupBody, request: Request, db: Se
             {"status": "error", "message": "Please choose emojis from the recovery picker."},
             status_code=400,
         )
-    emoji_hash = _hash_emoji_sequence(sequence)
     emoji_preview = _emoji_sequence_preview(sequence)
     now = datetime.utcnow()
     if existing:
         existing.hashed_recovery_key = recovery_key_hash
         existing.recovery_enabled = True
-        existing.emoji_sequence_hash = emoji_hash
+        existing.emoji_sequence_hash = recovery_key_hash
         existing.emoji_sequence_preview = emoji_preview
-        existing.emoji_hash = emoji_hash
+        existing.emoji_hash = recovery_key_hash
         existing.recovery_hint = hint
         existing.failed_attempts = 0
         existing.locked_until = None
@@ -2041,9 +2071,9 @@ def setup_recovery_emojis(body: RecoveryEmojiSetupBody, request: Request, db: Se
             user_id=user.id,
             hashed_recovery_key=recovery_key_hash,
             recovery_enabled=True,
-            emoji_sequence_hash=emoji_hash,
+            emoji_sequence_hash=recovery_key_hash,
             emoji_sequence_preview=emoji_preview,
-            emoji_hash=emoji_hash,
+            emoji_hash=recovery_key_hash,
             recovery_hint=hint,
             failed_attempts=0,
             locked_until=None,
@@ -2180,31 +2210,46 @@ def verify_recovery_emojis(body: RecoveryEmojiVerifyBody, db: Session = Depends(
 
         print("[Recovery] HASH CHECK START")
         stored_key_hash = (recovery.hashed_recovery_key or "").strip()
-        legacy_hash = (recovery.emoji_sequence_hash or recovery.emoji_hash or "").strip()
         print(
             "[Recovery] STORED HASH READY "
             f"has_recovery_key_hash={bool(stored_key_hash)} "
-            f"has_new_hash={bool((recovery.emoji_sequence_hash or '').strip())} "
-            f"has_legacy_hash={bool((recovery.emoji_hash or '').strip())} "
             f"recovery_enabled={bool(getattr(recovery, 'recovery_enabled', True))} "
             f"preview={recovery.emoji_sequence_preview or ''}"
         )
+        if not stored_key_hash:
+            preview_sequence = _emoji_sequence_from_preview(recovery.emoji_sequence_preview)
+            if preview_sequence:
+                preview_hash, preview_key, _ = _hash_recovery_key(preview_sequence)
+                if preview_hash:
+                    stored_key_hash = preview_hash
+                    recovery.hashed_recovery_key = preview_hash
+                    recovery.updated_at = now
+                    db.commit()
+                    print(
+                        "[Recovery] HASH BACKFILLED FROM PREVIEW "
+                        f"email={email} key={preview_key} hash_prefix={preview_hash[:12]}"
+                    )
+            if not stored_key_hash:
+                print("[Recovery] REQUEST FAILED reason=recovery_hash_missing")
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "status": "error",
+                        "message": "Recovery emojis not set up yet.",
+                    },
+                    status_code=404,
+                )
         hash_ok, recovery_key, recovery_key_hash = _verify_recovery_key_hash(sequence, stored_key_hash)
-        legacy_hash_ok = False
-        if not hash_ok and legacy_hash:
-            legacy_hash_ok = _verify_emoji_hash(sequence, legacy_hash)
-            hash_ok = legacy_hash_ok
         print(
             "[Recovery] HASH CHECK RESULT "
-            f"matched={hash_ok} deterministic_matched={bool(stored_key_hash and hash_ok and not legacy_hash_ok)} "
-            f"legacy_matched={legacy_hash_ok}"
+            f"matched={hash_ok} deterministic_hash_prefix={(recovery_key_hash or '')[:12]}"
         )
         if hash_ok:
             if recovery_key_hash and recovery.hashed_recovery_key != recovery_key_hash:
                 recovery.hashed_recovery_key = recovery_key_hash
                 recovery.recovery_enabled = True
                 print(
-                    "[Recovery] LEGACY ROW UPGRADED "
+                    "[Recovery] RECOVERY HASH UPDATED "
                     f"email={email} recovery_key={recovery_key} hash_prefix={recovery_key_hash[:12]}"
                 )
             recovery.failed_attempts = 0
