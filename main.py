@@ -51,6 +51,44 @@ RECOVERY_EMOJI_COUNT = 4
 RECOVERY_MAX_FAILED_ATTEMPTS = 5
 RECOVERY_LOCK_MINUTES = 15
 RECOVERY_TOKEN_TTL_MINUTES = 10
+RECOVERY_EMOJI_MAP = {
+    "🌙": "A1",
+    "☕": "B2",
+    "🌸": "C3",
+    "🐇": "D4",
+    "✨": "E5",
+    "🪷": "F6",
+    "🫧": "G7",
+    "🌷": "H8",
+    "⭐": "J9",
+    "🕊️": "K1",
+    "🍓": "L2",
+    "💫": "M3",
+    "🌊": "N4",
+    "🦋": "P5",
+    "🍃": "Q6",
+    "🪻": "R7",
+    "🍯": "S8",
+    "🫶": "T9",
+    "🌼": "U1",
+    "🪄": "V2",
+    "🩷": "W3",
+    "🌤️": "X4",
+    "🌛": "Y5",
+    "🤍": "Z6",
+    "😀": "AA1",
+    "😭": "BB7",
+    "🔥": "KK3",
+    "❤️": "PP2",
+}
+RECOVERY_EMOJI_ALIASES = {
+    "❤": "❤️",
+    "♥": "❤️",
+    "☀️": "🌤️",
+    "☀": "🌤️",
+    "🕊": "🕊️",
+    "🌤": "🌤️",
+}
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_PRIMARY_MODEL = "z-ai/glm-4.5-air:free"
 OPENROUTER_DEFAULT_MODEL = OPENROUTER_PRIMARY_MODEL
@@ -257,6 +295,8 @@ class LoginBody(BaseModel):
 class ChatBody(BaseModel):
     message: str
     history: list[dict] = []
+    language_code: Optional[str] = None
+    languageCode: Optional[str] = None
 
 
 class ReminderBody(BaseModel):
@@ -1225,7 +1265,8 @@ def _sha256_text(value: str) -> str:
 
 
 def _normalize_emoji_value(value: str) -> str:
-    return unicodedata.normalize("NFC", (value or "").strip())
+    normalized = unicodedata.normalize("NFC", (value or "").strip())
+    return RECOVERY_EMOJI_ALIASES.get(normalized, normalized)
 
 
 def _normalize_emoji_sequence(values: list[str]) -> list[str]:
@@ -1240,6 +1281,24 @@ def _emoji_sequence_exact_payload(sequence: list[str]) -> str:
     return "".join(_normalize_emoji_sequence(sequence))
 
 
+def _emoji_recovery_key(sequence: list[str]) -> tuple[Optional[str], list[str]]:
+    normalized = _normalize_emoji_sequence(sequence)
+    codes: list[str] = []
+    for emoji in normalized:
+        code = RECOVERY_EMOJI_MAP.get(emoji)
+        if not code:
+            return None, normalized
+        codes.append(code)
+    return "-".join(codes), normalized
+
+
+def _hash_recovery_key(sequence: list[str]) -> tuple[Optional[str], Optional[str], list[str]]:
+    recovery_key, normalized = _emoji_recovery_key(sequence)
+    if not recovery_key:
+        return None, None, normalized
+    return _sha256_text(recovery_key), recovery_key, normalized
+
+
 def _validate_emoji_sequence(values: list[str]) -> tuple[bool, str, list[str]]:
     if not isinstance(values, list):
         return False, "Emoji sequence is required.", []
@@ -1248,6 +1307,9 @@ def _validate_emoji_sequence(values: list[str]) -> tuple[bool, str, list[str]]:
         return False, "Please choose exactly 4 emojis.", []
     if any(not emoji for emoji in normalized):
         return False, "Please choose exactly 4 emojis.", []
+    unsupported = [emoji for emoji in normalized if emoji not in RECOVERY_EMOJI_MAP]
+    if unsupported:
+        return False, "Please choose emojis from the recovery picker.", []
     return True, "", normalized
 
 
@@ -1258,6 +1320,10 @@ def _emoji_sequence_payload(sequence: list[str]) -> str:
 
 def _legacy_emoji_sequence_payload(sequence: list[str]) -> str:
     return json.dumps(_normalize_emoji_sequence(sequence), ensure_ascii=False, separators=(",", ":"))
+
+
+def _legacy_pipe_emoji_sequence_payload(sequence: list[str]) -> str:
+    return "|".join(_normalize_emoji_sequence(sequence))
 
 
 def _hash_emoji_sequence(sequence: list[str], salt: Optional[bytes] = None) -> str:
@@ -1286,6 +1352,7 @@ def _verify_emoji_hash(sequence: list[str], stored_hash: str) -> bool:
     payloads = [
         _emoji_sequence_exact_payload(normalized).encode("utf-8"),
         _emoji_sequence_payload(normalized).encode("utf-8"),
+        _legacy_pipe_emoji_sequence_payload(normalized).encode("utf-8"),
         _legacy_emoji_sequence_payload(normalized).encode("utf-8"),
     ]
     for payload in payloads:
@@ -1293,6 +1360,14 @@ def _verify_emoji_hash(sequence: list[str], stored_hash: str) -> bool:
         if hmac.compare_digest(actual, expected):
             return True
     return False
+
+
+def _verify_recovery_key_hash(sequence: list[str], stored_hash: str) -> tuple[bool, Optional[str], Optional[str]]:
+    expected_hash, recovery_key, _ = _hash_recovery_key(sequence)
+    stored = (stored_hash or "").strip()
+    if not expected_hash or not stored:
+        return False, recovery_key, expected_hash
+    return hmac.compare_digest(expected_hash, stored), recovery_key, expected_hash
 
 
 def _recovery_emojis_enabled(db: Session, user_id: int) -> bool:
@@ -1321,6 +1396,22 @@ def _recovery_reset_token_from_body(body) -> str:
 
 
 def _ensure_recovery_emoji_schema(db: Session):
+    db.execute(
+        text(
+            """
+            ALTER TABLE user_recovery_emojis
+            ADD COLUMN IF NOT EXISTS hashed_recovery_key TEXT
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            ALTER TABLE user_recovery_emojis
+            ADD COLUMN IF NOT EXISTS recovery_enabled BOOLEAN NOT NULL DEFAULT TRUE
+            """
+        )
+    )
     db.execute(
         text(
             """
@@ -1847,13 +1938,22 @@ def register(body: RegisterBody, db: Session = Depends(get_db)):
 
 @app.post("/login")
 def login(body: LoginBody, db: Session = Depends(get_db)):
-    user = crud.authenticate_user(db, body.email, body.password)
-    if not user:
+    email = (body.email or "").strip().lower()
+    print(f"[Auth] LOGIN REQUEST START email={email or '<missing>'}")
+    user = crud.get_user_by_email(db, email)
+    print(f"[Auth] LOGIN USER LOOKUP found={bool(user)} email={email or '<missing>'}")
+    password_ok = bool(user and user.check_password(body.password))
+    print(f"[Auth] LOGIN PASSWORD CHECK ok={password_ok} email={email or '<missing>'}")
+    if not password_ok:
+        print(f"[Auth] LOGIN FAILED reason=bad_credentials email={email or '<missing>'}")
         return JSONResponse({"status": "error", "message": "Incorrect email or password."}, status_code=401)
 
+    print(f"[Auth] LOGIN SESSION CREATE START user_id={user.id}")
     token = crud.create_session(db, user.id)
+    print(f"[Auth] LOGIN SESSION CREATED user_id={user.id} token_issued={bool(token)}")
     resp = JSONResponse(_session_response_payload(db, user))
     resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", max_age=SESSION_MAX_DAYS * 24 * 3600)
+    print(f"[Auth] LOGIN RESPONSE READY user_id={user.id}")
     return resp
 
 
@@ -1917,10 +2017,18 @@ def setup_recovery_emojis(body: RecoveryEmojiSetupBody, request: Request, db: Se
             )
 
     hint = (body.recovery_hint or "").strip() or None
+    recovery_key_hash, recovery_key, _ = _hash_recovery_key(sequence)
+    if not recovery_key_hash:
+        return JSONResponse(
+            {"status": "error", "message": "Please choose emojis from the recovery picker."},
+            status_code=400,
+        )
     emoji_hash = _hash_emoji_sequence(sequence)
     emoji_preview = _emoji_sequence_preview(sequence)
     now = datetime.utcnow()
     if existing:
+        existing.hashed_recovery_key = recovery_key_hash
+        existing.recovery_enabled = True
         existing.emoji_sequence_hash = emoji_hash
         existing.emoji_sequence_preview = emoji_preview
         existing.emoji_hash = emoji_hash
@@ -1931,6 +2039,8 @@ def setup_recovery_emojis(body: RecoveryEmojiSetupBody, request: Request, db: Se
     else:
         existing = UserRecoveryEmoji(
             user_id=user.id,
+            hashed_recovery_key=recovery_key_hash,
+            recovery_enabled=True,
             emoji_sequence_hash=emoji_hash,
             emoji_sequence_preview=emoji_preview,
             emoji_hash=emoji_hash,
@@ -1942,6 +2052,11 @@ def setup_recovery_emojis(body: RecoveryEmojiSetupBody, request: Request, db: Se
         )
         db.add(existing)
     db.commit()
+    print(
+        "[Recovery] SETUP SAVED "
+        f"user_id={user.id} recovery_key={recovery_key} "
+        f"hashed_recovery_key_prefix={recovery_key_hash[:12]}"
+    )
     return {
         "status": "ok",
         "message": "Recovery emojis saved.",
@@ -2009,6 +2124,12 @@ def verify_recovery_emojis(body: RecoveryEmojiVerifyBody, db: Session = Depends(
             )
         print(f"[Recovery] EMOJI SEQUENCE RECEIVED email={email} count={len(sequence)}")
         print(f"[Recovery] NORMALIZED SEQUENCE value={_emoji_sequence_payload(sequence)}")
+        generated_hash, generated_key, _ = _hash_recovery_key(sequence)
+        print(
+            "[Recovery] GENERATED RECOVERY KEY "
+            f"key={generated_key or '<invalid>'} "
+            f"hash_prefix={(generated_hash or '')[:12]} hash_generated={bool(generated_hash)}"
+        )
 
         user = crud.get_user_by_email(db, email)
         print(f"[Recovery] USER FOUND found={bool(user)} email={email}")
@@ -2058,16 +2179,34 @@ def verify_recovery_emojis(body: RecoveryEmojiVerifyBody, db: Session = Depends(
         )
 
         print("[Recovery] HASH CHECK START")
-        stored_hash = (recovery.emoji_sequence_hash or recovery.emoji_hash or "").strip()
+        stored_key_hash = (recovery.hashed_recovery_key or "").strip()
+        legacy_hash = (recovery.emoji_sequence_hash or recovery.emoji_hash or "").strip()
         print(
             "[Recovery] STORED HASH READY "
+            f"has_recovery_key_hash={bool(stored_key_hash)} "
             f"has_new_hash={bool((recovery.emoji_sequence_hash or '').strip())} "
             f"has_legacy_hash={bool((recovery.emoji_hash or '').strip())} "
+            f"recovery_enabled={bool(getattr(recovery, 'recovery_enabled', True))} "
             f"preview={recovery.emoji_sequence_preview or ''}"
         )
-        hash_ok = _verify_emoji_hash(sequence, stored_hash)
-        print(f"[Recovery] HASH CHECK RESULT matched={hash_ok}")
+        hash_ok, recovery_key, recovery_key_hash = _verify_recovery_key_hash(sequence, stored_key_hash)
+        legacy_hash_ok = False
+        if not hash_ok and legacy_hash:
+            legacy_hash_ok = _verify_emoji_hash(sequence, legacy_hash)
+            hash_ok = legacy_hash_ok
+        print(
+            "[Recovery] HASH CHECK RESULT "
+            f"matched={hash_ok} deterministic_matched={bool(stored_key_hash and hash_ok and not legacy_hash_ok)} "
+            f"legacy_matched={legacy_hash_ok}"
+        )
         if hash_ok:
+            if recovery_key_hash and recovery.hashed_recovery_key != recovery_key_hash:
+                recovery.hashed_recovery_key = recovery_key_hash
+                recovery.recovery_enabled = True
+                print(
+                    "[Recovery] LEGACY ROW UPGRADED "
+                    f"email={email} recovery_key={recovery_key} hash_prefix={recovery_key_hash[:12]}"
+                )
             recovery.failed_attempts = 0
             recovery.locked_until = None
             recovery.updated_at = now
@@ -2227,6 +2366,19 @@ def refresh_session(request: Request, db: Session = Depends(get_db)):
     return resp
 
 
+def _chat_language_from_body(body: ChatBody) -> tuple[str, str, str]:
+    raw = (body.language_code or body.languageCode or "en").strip().lower()
+    if raw not in {"en", "hi", "mr"}:
+        raw = "en"
+    names = {
+        "en": ("English", "simple, natural English"),
+        "hi": ("Hindi", "natural Hindi in Devanagari script"),
+        "mr": ("Marathi", "natural Marathi in Devanagari script"),
+    }
+    name, style = names[raw]
+    return raw, name, style
+
+
 @app.post("/chat")
 def chat_proxy(body: ChatBody, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -2249,15 +2401,20 @@ def chat_proxy(body: ChatBody, request: Request, db: Session = Depends(get_db)):
             continue
         safe_history.append({"role": role, "content": text_value[:900]})
 
+    language_code, language_name, language_style = _chat_language_from_body(body)
     prompt = (
-        "You are Ahira. Reply in warm, emotionally supportive, simple language for Indian users. "
-        "Avoid robotic tone and avoid difficult vocabulary."
+        "You are Ahira, a warm and emotionally supportive companion. "
+        f"You MUST respond ONLY in {language_name}. Use {language_style}. "
+        "Do not mix languages unless the user explicitly asks you to translate or switch languages. "
+        "Use short, clear sentences that an everyday user can understand. "
+        "Avoid robotic tone, hard vocabulary, and long lectures. "
+        "If the user is upset, acknowledge the feeling first, then give one or two practical next steps."
     )
     messages = [{"role": "system", "content": prompt}, *safe_history, {"role": "user", "content": message}]
 
     started_at = datetime.utcnow()
     print(
-        f"[chat.proxy] OPENROUTER REQUEST START user_id={user.id} history={len(safe_history)} "
+        f"[chat.proxy] OPENROUTER REQUEST START user_id={user.id} language={language_code} history={len(safe_history)} "
         f"messageChars={len(message)}"
     )
     last_error = None
@@ -3154,6 +3311,8 @@ def run_feed_migrations(db: Session):
     CREATE TABLE IF NOT EXISTS user_recovery_emojis (
       id BIGSERIAL PRIMARY KEY,
       user_id BIGINT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+      hashed_recovery_key TEXT,
+      recovery_enabled BOOLEAN NOT NULL DEFAULT TRUE,
       emoji_sequence_hash TEXT NOT NULL,
       emoji_sequence_preview TEXT,
       emoji_hash TEXT,
@@ -3594,6 +3753,8 @@ def run_feed_migrations(db: Session):
     UPDATE users SET password_hash = password WHERE password_hash IS NULL;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '30 days');
     ALTER TABLE feed_user_posts ADD COLUMN IF NOT EXISTS client_post_id VARCHAR(120);
+    ALTER TABLE user_recovery_emojis ADD COLUMN IF NOT EXISTS hashed_recovery_key TEXT;
+    ALTER TABLE user_recovery_emojis ADD COLUMN IF NOT EXISTS recovery_enabled BOOLEAN NOT NULL DEFAULT TRUE;
     ALTER TABLE user_recovery_emojis ADD COLUMN IF NOT EXISTS emoji_sequence_hash TEXT;
     ALTER TABLE user_recovery_emojis ADD COLUMN IF NOT EXISTS emoji_sequence_preview TEXT;
     ALTER TABLE user_recovery_emojis ADD COLUMN IF NOT EXISTS emoji_hash TEXT;
