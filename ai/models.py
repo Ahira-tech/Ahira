@@ -8,7 +8,7 @@ SQLAlchemy converts these to real PostgreSQL tables automatically.
 import hashlib
 import secrets
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Boolean, Column, Integer, String, Text, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 from ai.database import Base
 
@@ -80,6 +80,8 @@ class UserRecoveryEmoji(Base):
 
     id              = Column(Integer, primary_key=True, index=True)
     user_id         = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
+    hashed_recovery_key = Column(Text, nullable=True)
+    recovery_enabled = Column(Boolean, nullable=False, default=True)
     emoji_sequence_hash = Column(Text, nullable=False)
     emoji_sequence_preview = Column(Text, nullable=True)
     emoji_hash      = Column(Text, nullable=True)
